@@ -43,10 +43,9 @@ make install PREFIX=$HOME/.local
 ### プロキシモード
 
 ```bash
-# --upstream フラグ使用
-mcp-guardian --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
+mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
-# -- セパレータ使用
+# オプション付き
 mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
@@ -75,6 +74,35 @@ mcp-guardian --explain
 mcp-guardian --receipts
 ```
 
+## CLI リファレンス
+
+```
+# プロキシモード
+mcp-guardian [options] -- command [args...]
+
+# オプション
+--enforcement strict|advisory   実行モード（デフォルト: strict）
+--schema off|warn|strict        スキーマ検証（デフォルト: warn）
+--max-calls N                   バジェット上限（0 = 無制限）
+--timeout ms                    上流タイムアウト（デフォルト: 300000）
+--webhook url                   Webhook URL（複数指定可）
+--state-dir dir                 状態ディレクトリ（デフォルト: .governance）
+
+# 分析
+--view                          レシートタイムライン
+--verify                        ハッシュチェーン検証
+--explain                       セッション説明
+--receipts                      サマリー
+
+# 統合
+--wrap <server>                 .mcp.json にプロキシを挿入
+--unwrap <server>               .mcp.json を元に戻す
+--config <path>                 .mcp.json のパス
+
+# 情報
+--version                       バージョン表示
+```
+
 ## ガバナンスパイプライン
 
 全ての `tools/call` は5段階のゲートを通過します:
@@ -86,6 +114,38 @@ mcp-guardian --receipts
 5. **収束** -- ループ検知（同一失敗3回以上、同一ツール+ターゲット2分間で5回以上）
 
 `strict` モードではゲート失敗時にコールをブロック。`advisory` モードでは違反をログに記録しつつ転送。
+
+## メタツール
+
+プロキシはエージェントが呼び出せる5つのガバナンスツールを注入します:
+
+| ツール | 説明 |
+|--------|------|
+| `governance_status` | コントローラID、エポック、制約、レシート深度を確認 |
+| `governance_bump_authority` | エポックを進める（現在のセッションを無効化） |
+| `governance_declare_intent` | 目標+述語を宣言して帰属追跡 |
+| `governance_clear_intent` | 宣言済みインテントをクリア |
+| `governance_convergence_status` | ループ検知状態を確認 |
+
+## アーキテクチャ
+
+```
+エージェント (Claude, GPT, etc.)
+  | stdin/stdout (JSON-RPC 2.0)
+mcp-guardian
+  | stdin/stdout (JSON-RPC 2.0)
+上流 MCP サーバー
+```
+
+### 状態ディレクトリ (.governance/)
+
+| ファイル | 内容 |
+|---------|------|
+| `receipts.jsonl` | 追記専用ハッシュチェーン監査証跡 |
+| `constraints.json` | TTL 付き学習済み失敗フィンガープリント |
+| `controller.json` | 安定コントローラ UUID |
+| `authority.json` | エポック + セッションバインディング + ジェネシスハッシュ |
+| `intent.json` | 現在の宣言済みインテント |
 
 ## ビルド
 

@@ -58,8 +58,10 @@ func Run(cfg *config.Config) error {
 
 	// Set genesis hash if first run
 	if auth.GenesisHash == "" && ledger.Seq() > 0 {
-		// Load first receipt to get genesis hash
-		records, _ := ledger.LoadAll()
+		records, err := ledger.LoadAll()
+		if err != nil {
+			return fmt.Errorf("load receipts for genesis hash: %w", err)
+		}
 		if len(records) > 0 {
 			auth.GenesisHash = records[0].Hash
 			state.SaveAuthority(cfg.StateDir, auth)

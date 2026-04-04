@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 )
 
 // Upstream manages the child MCP server process.
@@ -17,14 +16,9 @@ type Upstream struct {
 }
 
 // StartUpstream spawns the upstream MCP server as a child process.
+// The command is executed directly without a shell to prevent command injection.
 func StartUpstream(command string, args []string) (*Upstream, error) {
-	// If command contains spaces and no args, treat as shell command
-	var cmd *exec.Cmd
-	if len(args) == 0 && strings.Contains(command, " ") {
-		cmd = exec.Command("sh", "-c", command)
-	} else {
-		cmd = exec.Command(command, args...)
-	}
+	cmd := exec.Command(command, args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

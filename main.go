@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/nlink-jp/mcp-guardian/internal/cli"
 	"github.com/nlink-jp/mcp-guardian/internal/config"
@@ -14,7 +15,6 @@ var version = "dev"
 
 func main() {
 	// CLI flags
-	upstream := flag.String("upstream", "", "Upstream MCP server command")
 	stateDir := flag.String("state-dir", ".governance", "Governance state directory")
 	enforcement := flag.String("enforcement", "strict", "Enforcement mode: strict or advisory")
 	schemaMode := flag.String("schema", "warn", "Schema validation: off, warn, or strict")
@@ -78,26 +78,32 @@ func main() {
 		return
 	}
 
-	// Determine upstream command
-	upstreamCmd := *upstream
-	upstreamArgs := flag.Args()
-	if upstreamCmd == "" && len(upstreamArgs) > 0 {
-		upstreamCmd = upstreamArgs[0]
-		upstreamArgs = upstreamArgs[1:]
+	// Validate flags
+	if err := validateFlags(*enforcement, *schemaMode, *maxCalls, *timeoutMs); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 
-	if upstreamCmd == "" {
-		fmt.Fprintln(os.Stderr, "error: --upstream or trailing command required")
-		fmt.Fprintln(os.Stderr, "usage: mcp-guardian --upstream 'command' [options]")
-		fmt.Fprintln(os.Stderr, "       mcp-guardian [options] -- command [args...]")
+	// Canonicalize state-dir to prevent path traversal
+	absStateDir, err := filepath.Abs(*stateDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid state-dir: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Upstream command from trailing args (after --)
+	args := flag.Args()
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "error: upstream command required after --")
+		fmt.Fprintln(os.Stderr, "usage: mcp-guardian [options] -- command [args...]")
 		os.Exit(1)
 	}
 
 	// Proxy mode
 	cfg := config.Defaults()
-	cfg.Upstream = upstreamCmd
-	cfg.UpstreamArgs = upstreamArgs
-	cfg.StateDir = *stateDir
+	cfg.Upstream = args[0]
+	cfg.UpstreamArgs = args[1:]
+	cfg.StateDir = absStateDir
 	cfg.Enforcement = *enforcement
 	cfg.SchemaMode = *schemaMode
 	cfg.MaxCalls = *maxCalls
@@ -108,6 +114,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "mcp-guardian: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func validateFlags(enforcement, schemaMode string, maxCalls, timeoutMs int) error {
+	switch enforcement {
+	case "strict", "advisory":
+	default:
+		return fmt.Errorf("--enforcement must be 'strict' or 'advisory', got '%s'", enforcement)
+	}
+	switch schemaMode {
+	case "off", "warn", "strict":
+	default:
+		return fmt.Errorf("--schema must be 'off', 'warn', or 'strict', got '%s'", schemaMode)
+	}
+	if maxCalls < 0 {
+		return fmt.Errorf("--max-calls must be >= 0, got %d", maxCalls)
+	}
+	if timeoutMs <= 0 {
+		return fmt.Errorf("--timeout must be > 0, got %d", timeoutMs)
+	}
+	return nil
 }
 
 // multiFlag allows a flag to be specified multiple times.

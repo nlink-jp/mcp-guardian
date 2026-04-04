@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -62,6 +63,7 @@ func send(url string, payload Payload) {
 	if err != nil {
 		return
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 }
 

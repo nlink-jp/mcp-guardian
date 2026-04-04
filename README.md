@@ -43,10 +43,9 @@ make install PREFIX=$HOME/.local
 ### Proxy mode
 
 ```bash
-# Using --upstream flag
-mcp-guardian --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
+mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
-# Using -- separator
+# With options
 mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
@@ -79,7 +78,6 @@ mcp-guardian --receipts
 
 ```
 # Proxy mode
-mcp-guardian --upstream "command" [options]
 mcp-guardian [options] -- command [args...]
 
 # Options

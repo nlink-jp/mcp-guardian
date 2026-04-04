@@ -2,6 +2,7 @@ package metatool
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/nlink-jp/mcp-guardian/internal/governance"
 	"github.com/nlink-jp/mcp-guardian/internal/jsonrpc"
@@ -193,7 +194,10 @@ func handleConvergenceStatus(ctx *Context) (interface{}, error) {
 }
 
 func mustJSON(v interface{}) string {
-	data, _ := json.MarshalIndent(v, "", "  ")
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("{\"error\": \"failed to marshal: %s\"}", err.Error())
+	}
 	return string(data)
 }
 
