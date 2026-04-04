@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -10,17 +9,16 @@ import (
 )
 
 // View displays a receipt timeline with optional filtering.
-func View(stateDir, filterTool, filterOutcome string, limit int) {
+func View(stateDir, filterTool, filterOutcome string, limit int) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot read receipts: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
 	if len(records) == 0 {
 		fmt.Println("No receipts found.")
-		return
+		return nil
 	}
 
 	count := 0
@@ -40,6 +38,7 @@ func View(stateDir, filterTool, filterOutcome string, limit int) {
 	}
 
 	fmt.Printf("\n%s%d receipt(s) shown%s\n", gray, count, reset)
+	return nil
 }
 
 func printReceipt(r *receipt.Record) {

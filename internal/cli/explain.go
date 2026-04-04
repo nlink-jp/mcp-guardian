@@ -2,24 +2,22 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
 )
 
 // Explain generates a plain-language summary of the session.
-func Explain(stateDir string) {
+func Explain(stateDir string) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot read receipts: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
 	if len(records) == 0 {
 		fmt.Println("No activity to explain.")
-		return
+		return nil
 	}
 
 	// Gather statistics
@@ -76,20 +74,20 @@ func Explain(stateDir string) {
 				red, r.ToolName, reset, r.Target, r.Summary)
 		}
 	}
+	return nil
 }
 
 // Receipts shows a compact session summary.
-func Receipts(stateDir string) {
+func Receipts(stateDir string) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot read receipts: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
 	if len(records) == 0 {
 		fmt.Println("No receipts.")
-		return
+		return nil
 	}
 
 	var successes, errors, blocked int
@@ -114,4 +112,5 @@ func Receipts(stateDir string) {
 		last := records[len(records)-1]
 		fmt.Printf("Chain head: %s...%s\n", last.Hash[:16], last.Hash[len(last.Hash)-8:])
 	}
+	return nil
 }

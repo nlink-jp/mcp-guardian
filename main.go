@@ -52,29 +52,47 @@ func main() {
 
 	// Analysis commands
 	if *viewCmd {
-		cli.View(*stateDir, *filterTool, *filterOutcome, *viewLimit)
+		if err := cli.View(*stateDir, *filterTool, *filterOutcome, *viewLimit); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *verifyCmd {
-		cli.Verify(*stateDir)
+		if err := cli.Verify(*stateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *explainCmd {
-		cli.Explain(*stateDir)
+		if err := cli.Explain(*stateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *receiptsCmd {
-		cli.Receipts(*stateDir)
+		if err := cli.Receipts(*stateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
 	// Wrap/unwrap
 	if *wrapServer != "" {
-		cli.Wrap(*wrapServer, *stateDir, *enforcement, *configPath)
+		if err := cli.Wrap(*wrapServer, *stateDir, *enforcement, *configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *unwrapServer != "" {
-		cli.Unwrap(*unwrapServer, *configPath)
+		if err := cli.Unwrap(*unwrapServer, *configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
