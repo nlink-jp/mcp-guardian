@@ -2,13 +2,14 @@ package config
 
 // Config holds the proxy configuration.
 type Config struct {
-	Upstream    string
-	StateDir    string
-	Enforcement string
-	SchemaMode  string
-	MaxCalls    int
-	TimeoutMs   int
-	WebhookURLs []string
+	Upstream     string
+	UpstreamArgs []string
+	StateDir     string
+	Enforcement  string
+	SchemaMode   string
+	MaxCalls     int
+	TimeoutMs    int
+	WebhookURLs  []string
 }
 
 // Defaults returns a Config with default values.

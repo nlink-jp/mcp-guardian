@@ -96,6 +96,7 @@ func main() {
 	// Proxy mode
 	cfg := config.Defaults()
 	cfg.Upstream = upstreamCmd
+	cfg.UpstreamArgs = upstreamArgs
 	cfg.StateDir = *stateDir
 	cfg.Enforcement = *enforcement
 	cfg.SchemaMode = *schemaMode

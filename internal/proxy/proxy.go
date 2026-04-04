@@ -66,11 +66,7 @@ func Run(cfg *config.Config) error {
 		}
 	}
 
-	// Parse upstream command
-	upstreamCmd := cfg.Upstream
-	var upstreamArgs []string
-
-	up, err := StartUpstream(upstreamCmd, upstreamArgs)
+	up, err := StartUpstream(cfg.Upstream, cfg.UpstreamArgs)
 	if err != nil {
 		return fmt.Errorf("start upstream: %w", err)
 	}
