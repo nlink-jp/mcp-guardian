@@ -1,10 +1,6 @@
 package cli
 
-import (
-	"os"
-	"syscall"
-	"unsafe"
-)
+import "os"
 
 var (
 	reset  = ""
@@ -16,7 +12,7 @@ var (
 	gray   = ""
 )
 
-func init() {
+func initColors() {
 	if isTerminal(os.Stdout.Fd()) {
 		reset = "\033[0m"
 		bold = "\033[1m"
@@ -28,9 +24,6 @@ func init() {
 	}
 }
 
-func isTerminal(fd uintptr) bool {
-	var termios syscall.Termios
-	_, _, err := syscall.Syscall6(syscall.SYS_IOCTL, fd,
-		uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&termios)), 0, 0, 0)
-	return err == 0
+func init() {
+	initColors()
 }
