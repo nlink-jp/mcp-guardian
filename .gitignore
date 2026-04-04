@@ -1,3 +1,24 @@
+# Build artifacts
 dist/
+
+# Runtime state
 .governance/
-*.exe
+
+# Go
+*.test
+*.out
+
+# Credentials
+.env
+
+# Claude Code
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
