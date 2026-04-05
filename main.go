@@ -8,6 +8,7 @@ import (
 
 	"github.com/nlink-jp/mcp-guardian/internal/cli"
 	"github.com/nlink-jp/mcp-guardian/internal/config"
+	"github.com/nlink-jp/mcp-guardian/internal/mask"
 	"github.com/nlink-jp/mcp-guardian/internal/proxy"
 )
 
@@ -35,7 +36,23 @@ func main() {
 	// Wrap/unwrap
 	wrapServer := flag.String("wrap", "", "Wrap an MCP server in .mcp.json")
 	unwrapServer := flag.String("unwrap", "", "Unwrap an MCP server in .mcp.json")
-	configPath := flag.String("config", "", "Path to .mcp.json (for wrap/unwrap)")
+	mcpConfigPath := flag.String("mcp-config", "", "Path to .mcp.json (for wrap/unwrap)")
+
+	// Config files
+	globalConfig := flag.String("config", "", "Path to global config file (JSON)")
+	serverConfig := flag.String("server-config", "", "Path to per-server config file (JSON)")
+
+	// Tool masking
+	var maskPatterns multiFlag
+	flag.Var(&maskPatterns, "mask", "Tool mask pattern (repeatable, supports wildcards)")
+	maskFile := flag.String("mask-file", "", "Path to mask patterns file (one pattern per line)")
+
+	// OTLP export
+	otlpEndpoint := flag.String("otlp-endpoint", "", "OTLP/HTTP endpoint URL (empty = disabled)")
+	var otlpHeaders headerFlag
+	flag.Var(&otlpHeaders, "otlp-header", "OTLP HTTP header KEY=VALUE (repeatable)")
+	otlpBatchSize := flag.Int("otlp-batch-size", 10, "OTLP export batch size")
+	otlpBatchTimeout := flag.Int("otlp-batch-timeout", 5000, "OTLP export batch timeout in ms")
 
 	// Webhook (can be specified multiple times)
 	var webhookURLs multiFlag
@@ -82,24 +99,18 @@ func main() {
 
 	// Wrap/unwrap
 	if *wrapServer != "" {
-		if err := cli.Wrap(*wrapServer, *stateDir, *enforcement, *configPath); err != nil {
+		if err := cli.Wrap(*wrapServer, *stateDir, *enforcement, *mcpConfigPath); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *unwrapServer != "" {
-		if err := cli.Unwrap(*unwrapServer, *configPath); err != nil {
+		if err := cli.Unwrap(*unwrapServer, *mcpConfigPath); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
-	}
-
-	// Validate flags
-	if err := validateFlags(*enforcement, *schemaMode, *maxCalls, *timeoutMs); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
 	}
 
 	// Canonicalize state-dir to prevent path traversal
@@ -117,16 +128,99 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Proxy mode
+	// Proxy mode: build config with priority Defaults → config file → CLI flags
 	cfg := config.Defaults()
+
+	// Layer 2: Apply global config (OTLP, webhooks, defaults)
+	if *globalConfig != "" {
+		gc, err := config.LoadGlobal(*globalConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		gc.ApplyTo(cfg)
+	}
+
+	// Layer 3: Apply server config (enforcement, mask, etc.)
+	if *serverConfig != "" {
+		sc, err := config.LoadServer(*serverConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		sc.ApplyTo(cfg)
+	}
+
+	// Layer 4: Apply explicitly set CLI flags (override config files)
+	setFlags := flagsExplicitlySet()
+	if setFlags["enforcement"] {
+		cfg.Enforcement = *enforcement
+	}
+	if setFlags["schema"] {
+		cfg.SchemaMode = *schemaMode
+	}
+	if setFlags["max-calls"] {
+		cfg.MaxCalls = *maxCalls
+	}
+	if setFlags["timeout"] {
+		cfg.TimeoutMs = *timeoutMs
+	}
+	if setFlags["state-dir"] {
+		cfg.StateDir = absStateDir
+	} else if cfg.StateDir == "" {
+		cfg.StateDir = absStateDir
+	} else {
+		// Canonicalize config-file stateDir too
+		abs, err := filepath.Abs(cfg.StateDir)
+		if err == nil {
+			cfg.StateDir = abs
+		}
+	}
+	if setFlags["otlp-endpoint"] {
+		cfg.OTLPEndpoint = *otlpEndpoint
+	}
+	if setFlags["otlp-batch-size"] {
+		cfg.OTLPBatchSize = *otlpBatchSize
+	}
+	if setFlags["otlp-batch-timeout"] {
+		cfg.OTLPBatchTimeout = *otlpBatchTimeout
+	}
+
+	// CLI OTLP headers override config file headers for same keys
+	cliHeaders := otlpHeaders.toMap()
+	if len(cliHeaders) > 0 {
+		if cfg.OTLPHeaders == nil {
+			cfg.OTLPHeaders = make(map[string]string)
+		}
+		for k, v := range cliHeaders {
+			cfg.OTLPHeaders[k] = v
+		}
+	}
+
+	// Merge list fields: CLI appends to config file values
+	if len(webhookURLs) > 0 {
+		cfg.WebhookURLs = append(cfg.WebhookURLs, []string(webhookURLs)...)
+	}
+	if len(maskPatterns) > 0 {
+		cfg.MaskPatterns = append(cfg.MaskPatterns, []string(maskPatterns)...)
+	}
+	if *maskFile != "" {
+		filePatterns, err := mask.LoadPatterns(*maskFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.MaskPatterns = append(cfg.MaskPatterns, filePatterns...)
+	}
+
 	cfg.Upstream = args[0]
 	cfg.UpstreamArgs = args[1:]
-	cfg.StateDir = absStateDir
-	cfg.Enforcement = *enforcement
-	cfg.SchemaMode = *schemaMode
-	cfg.MaxCalls = *maxCalls
-	cfg.TimeoutMs = *timeoutMs
-	cfg.WebhookURLs = []string(webhookURLs)
+
+	// Validate merged config
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	if err := proxy.Run(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "mcp-guardian: %v\n", err)
@@ -134,24 +228,13 @@ func main() {
 	}
 }
 
-func validateFlags(enforcement, schemaMode string, maxCalls, timeoutMs int) error {
-	switch enforcement {
-	case "strict", "advisory":
-	default:
-		return fmt.Errorf("--enforcement must be 'strict' or 'advisory', got '%s'", enforcement)
-	}
-	switch schemaMode {
-	case "off", "warn", "strict":
-	default:
-		return fmt.Errorf("--schema must be 'off', 'warn', or 'strict', got '%s'", schemaMode)
-	}
-	if maxCalls < 0 {
-		return fmt.Errorf("--max-calls must be >= 0, got %d", maxCalls)
-	}
-	if timeoutMs <= 0 {
-		return fmt.Errorf("--timeout must be > 0, got %d", timeoutMs)
-	}
-	return nil
+// flagsExplicitlySet returns a set of flag names that were explicitly provided on the CLI.
+func flagsExplicitlySet() map[string]bool {
+	set := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		set[f.Name] = true
+	})
+	return set
 }
 
 // multiFlag allows a flag to be specified multiple times.
@@ -161,4 +244,26 @@ func (f *multiFlag) String() string { return fmt.Sprintf("%v", *f) }
 func (f *multiFlag) Set(v string) error {
 	*f = append(*f, v)
 	return nil
+}
+
+// headerFlag parses KEY=VALUE pairs for HTTP headers.
+type headerFlag []string
+
+func (f *headerFlag) String() string { return fmt.Sprintf("%v", *f) }
+func (f *headerFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+func (f *headerFlag) toMap() map[string]string {
+	m := make(map[string]string)
+	for _, h := range *f {
+		for i := 0; i < len(h); i++ {
+			if h[i] == '=' {
+				m[h[:i]] = h[i+1:]
+				break
+			}
+		}
+	}
+	return m
 }

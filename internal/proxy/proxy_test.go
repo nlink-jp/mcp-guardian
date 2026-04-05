@@ -3,10 +3,14 @@ package proxy_test
 import (
 	"bufio"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -634,5 +638,462 @@ func TestProxyE2E_ConvergenceStatus(t *testing.T) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
 		t.Errorf("convergence_status should return valid JSON: %v", err)
+	}
+}
+
+func TestProxyE2E_ToolMaskStrict(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":"4","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "strict",
+		"--mask", "fail_*",
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 4 {
+		t.Fatalf("expected at least 4 responses, got %d", len(results))
+	}
+
+	// tools/list should NOT contain fail_tool
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			t.Error("fail_tool should be masked from tools/list")
+		}
+	}
+
+	// echo_tool should still be present
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "echo_tool" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("echo_tool should not be masked")
+	}
+
+	// tools/call fail_tool should return -32601 "tool not found"
+	r3 := results[2]
+	errObj, hasError := r3["error"]
+	if !hasError {
+		t.Fatal("masked tool call should return an error")
+	}
+	errMap, _ := errObj.(map[string]interface{})
+	errCode, _ := errMap["code"].(float64)
+	errMsg, _ := errMap["message"].(string)
+	if int(errCode) != -32601 {
+		t.Errorf("expected error code -32601, got %v", errCode)
+	}
+	if !strings.Contains(errMsg, "tool not found") {
+		t.Errorf("expected 'tool not found' message, got: %s", errMsg)
+	}
+
+	// echo_tool should work normally
+	r4 := results[3]
+	if _, hasError := r4["error"]; hasError {
+		t.Error("echo_tool should not be blocked")
+	}
+	result4, _ := r4["result"].(map[string]interface{})
+	content4, _ := result4["content"].([]interface{})
+	if len(content4) > 0 {
+		text, _ := content4[0].(map[string]interface{})["text"].(string)
+		if text != "ok" {
+			t.Errorf("echo_tool expected 'ok', got '%s'", text)
+		}
+	}
+
+	// Verify masked call was recorded in receipts
+	ledger, err := receipt.NewLedger(stateDir)
+	if err != nil {
+		t.Fatalf("failed to open ledger: %v", err)
+	}
+	records, err := ledger.LoadAll()
+	if err != nil {
+		t.Fatalf("failed to load receipts: %v", err)
+	}
+	// Should have 2 receipts: blocked fail_tool + success echo_tool
+	if len(records) != 2 {
+		t.Fatalf("expected 2 receipts, got %d", len(records))
+	}
+	if records[0].ToolName != "fail_tool" || records[0].Outcome != "blocked" {
+		t.Errorf("receipt[0]: expected fail_tool/blocked, got %s/%s", records[0].ToolName, records[0].Outcome)
+	}
+	if records[1].ToolName != "echo_tool" || records[1].Outcome != "success" {
+		t.Errorf("receipt[1]: expected echo_tool/success, got %s/%s", records[1].ToolName, records[1].Outcome)
+	}
+}
+
+func TestProxyE2E_ToolMaskAdvisory(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "advisory",
+		"--mask", "fail_*",
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// In advisory mode, fail_tool should still appear in tools/list
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("advisory mode should not mask tools from tools/list")
+	}
+
+	// tools/call fail_tool should be forwarded (not blocked)
+	r3 := results[2]
+	if _, hasError := r3["error"]; hasError {
+		t.Error("advisory mode should not block masked tool calls")
+	}
+}
+
+func TestProxyE2E_ToolMaskFile(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	// Write mask file
+	maskFile := filepath.Join(dir, "masks.txt")
+	if err := os.WriteFile(maskFile, []byte("# mask fail tools\nfail_*\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "strict",
+		"--mask-file", maskFile,
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// fail_tool should be masked from tools/list
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			t.Error("fail_tool should be masked via mask-file")
+		}
+	}
+
+	// tools/call fail_tool should be blocked
+	r3 := results[2]
+	if _, hasError := r3["error"]; !hasError {
+		t.Error("masked tool call via mask-file should return an error")
+	}
+}
+
+func TestProxyE2E_OTLPExport(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	var mu sync.Mutex
+	var logRequests [][]byte
+	var traceRequests [][]byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/logs":
+			logRequests = append(logRequests, body)
+		case "/v1/traces":
+			traceRequests = append(traceRequests, body)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+		`{"jsonrpc":"2.0","id":"4","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "advisory",
+		"--otlp-endpoint", srv.URL,
+		"--otlp-batch-size", "1",
+		"--otlp-header", "X-Test-Auth=secret123",
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 4 {
+		t.Fatalf("expected at least 4 responses, got %d", len(results))
+	}
+
+	// Wait for async OTLP sends + shutdown flush
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have received log exports for 2 tool calls
+	if len(logRequests) < 1 {
+		t.Fatalf("expected at least 1 log export request, got %d", len(logRequests))
+	}
+
+	// Verify log payload structure
+	var totalLogRecords int
+	for _, body := range logRequests {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("invalid log payload JSON: %v", err)
+		}
+		resourceLogs, _ := payload["resourceLogs"].([]interface{})
+		for _, rl := range resourceLogs {
+			rlMap, _ := rl.(map[string]interface{})
+			scopeLogs, _ := rlMap["scopeLogs"].([]interface{})
+			for _, sl := range scopeLogs {
+				slMap, _ := sl.(map[string]interface{})
+				records, _ := slMap["logRecords"].([]interface{})
+				totalLogRecords += len(records)
+			}
+		}
+	}
+	if totalLogRecords != 2 {
+		t.Errorf("expected 2 total log records across exports, got %d", totalLogRecords)
+	}
+
+	// Should also have trace exports
+	if len(traceRequests) < 1 {
+		t.Fatalf("expected at least 1 trace export request, got %d", len(traceRequests))
+	}
+
+	// Verify trace payload has spans
+	var totalSpans int
+	for _, body := range traceRequests {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("invalid trace payload JSON: %v", err)
+		}
+		resourceSpans, _ := payload["resourceSpans"].([]interface{})
+		for _, rs := range resourceSpans {
+			rsMap, _ := rs.(map[string]interface{})
+			scopeSpans, _ := rsMap["scopeSpans"].([]interface{})
+			for _, ss := range scopeSpans {
+				ssMap, _ := ss.(map[string]interface{})
+				spans, _ := ssMap["spans"].([]interface{})
+				totalSpans += len(spans)
+			}
+		}
+	}
+	if totalSpans != 2 {
+		t.Errorf("expected 2 total spans across exports, got %d", totalSpans)
+	}
+}
+
+func TestProxyE2E_ServerConfig(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	// Write per-server config with mask settings
+	srvCfg := filepath.Join(dir, "server.json")
+	srvContent := `{
+  "enforcement": "strict",
+  "mask": ["fail_*"]
+}`
+	if err := os.WriteFile(srvCfg, []byte(srvContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--server-config", srvCfg,
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// fail_tool should be masked (from server config)
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			t.Error("fail_tool should be masked via server config")
+		}
+	}
+
+	// tools/call fail_tool should be blocked
+	r3 := results[2]
+	if _, hasError := r3["error"]; !hasError {
+		t.Error("masked tool call via server config should return an error")
+	}
+}
+
+func TestProxyE2E_ServerConfigCLIOverride(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	// Server config sets enforcement=strict
+	srvCfg := filepath.Join(dir, "server.json")
+	srvContent := `{
+  "enforcement": "strict",
+  "mask": ["fail_*"]
+}`
+	if err := os.WriteFile(srvCfg, []byte(srvContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	// CLI overrides enforcement to advisory — mask should not block
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--server-config", srvCfg,
+		"--enforcement", "advisory",
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// In advisory mode (CLI override), fail_tool should still appear in tools/list
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("advisory mode (CLI override) should not mask tools from tools/list")
+	}
+
+	// tools/call fail_tool should be forwarded (not blocked) in advisory mode
+	r3 := results[2]
+	if _, hasError := r3["error"]; hasError {
+		t.Error("advisory mode (CLI override) should not block masked tool calls")
+	}
+}
+
+func TestProxyE2E_GlobalAndServerConfig(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	// Global config: sets defaults enforcement=advisory
+	globalCfg := filepath.Join(dir, "global.json")
+	globalContent := `{
+  "defaults": {
+    "enforcement": "advisory"
+  }
+}`
+	os.WriteFile(globalCfg, []byte(globalContent), 0644)
+
+	// Server config: overrides enforcement=strict, adds mask
+	srvCfg := filepath.Join(dir, "server.json")
+	srvContent := `{
+  "enforcement": "strict",
+  "mask": ["fail_*"]
+}`
+	os.WriteFile(srvCfg, []byte(srvContent), 0644)
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	// Server config (strict) should override global defaults (advisory)
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--config", globalCfg,
+		"--server-config", srvCfg,
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// Server enforcement=strict → fail_tool should be masked
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]interface{})
+		if tm["name"] == "fail_tool" {
+			t.Error("fail_tool should be masked (server overrides global)")
+		}
+	}
+
+	// Blocked
+	r3 := results[2]
+	if _, hasError := r3["error"]; !hasError {
+		t.Error("fail_tool should be blocked in strict mode")
 	}
 }

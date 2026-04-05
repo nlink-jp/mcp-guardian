@@ -9,8 +9,31 @@ import (
 	"github.com/nlink-jp/mcp-guardian/internal/state"
 )
 
+// WrapOptions holds options for the Wrap command.
+type WrapOptions struct {
+	ServerName   string
+	StateDir     string
+	Enforcement  string
+	MCPConfigPath string // path to .mcp.json
+	MaskPatterns []string
+	MaskFile     string
+	GlobalConfig string // path to global config file
+	ServerConfig string // path to per-server config file
+}
+
 // Wrap modifies .mcp.json to interpose the proxy on a server.
-func Wrap(serverName, stateDir, enforcement, configPath string) error {
+func Wrap(serverName, stateDir, enforcement, mcpConfigPath string) error {
+	return WrapWithOptions(WrapOptions{
+		ServerName:    serverName,
+		StateDir:      stateDir,
+		Enforcement:   enforcement,
+		MCPConfigPath: mcpConfigPath,
+	})
+}
+
+// WrapWithOptions modifies .mcp.json with full option support.
+func WrapWithOptions(opts WrapOptions) error {
+	configPath := opts.MCPConfigPath
 	if configPath == "" {
 		configPath = findMCPConfig()
 	}
@@ -30,6 +53,7 @@ func Wrap(serverName, stateDir, enforcement, configPath string) error {
 		return fmt.Errorf("no mcpServers found in %s", configPath)
 	}
 
+	serverName := opts.ServerName
 	server, ok := servers[serverName].(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("server '%s' not found", serverName)
@@ -57,10 +81,27 @@ func Wrap(serverName, stateDir, enforcement, configPath string) error {
 	origArgs, _ := toStringSlice(server["args"])
 
 	newArgs := []string{
-		"--enforcement", enforcement,
-		"--state-dir", stateDir + "-" + serverName,
-		"--", origCommand,
+		"--enforcement", opts.Enforcement,
+		"--state-dir", opts.StateDir + "-" + serverName,
 	}
+
+	// Add mask options
+	for _, pattern := range opts.MaskPatterns {
+		newArgs = append(newArgs, "--mask", pattern)
+	}
+	if opts.MaskFile != "" {
+		newArgs = append(newArgs, "--mask-file", opts.MaskFile)
+	}
+
+	// Add config files
+	if opts.GlobalConfig != "" {
+		newArgs = append(newArgs, "--config", opts.GlobalConfig)
+	}
+	if opts.ServerConfig != "" {
+		newArgs = append(newArgs, "--server-config", opts.ServerConfig)
+	}
+
+	newArgs = append(newArgs, "--", origCommand)
 	newArgs = append(newArgs, origArgs...)
 
 	server["command"] = self

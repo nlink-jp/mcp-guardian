@@ -13,7 +13,9 @@ import (
 	"github.com/nlink-jp/mcp-guardian/internal/config"
 	"github.com/nlink-jp/mcp-guardian/internal/governance"
 	"github.com/nlink-jp/mcp-guardian/internal/jsonrpc"
+	"github.com/nlink-jp/mcp-guardian/internal/mask"
 	"github.com/nlink-jp/mcp-guardian/internal/metatool"
+	"github.com/nlink-jp/mcp-guardian/internal/otlp"
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
 	"github.com/nlink-jp/mcp-guardian/internal/state"
 	"github.com/nlink-jp/mcp-guardian/internal/webhook"
@@ -28,6 +30,8 @@ type Proxy struct {
 	authority   *state.Authority
 	convergence *governance.ConvergenceTracker
 	schemaCache map[string]json.RawMessage // toolName -> inputSchema
+
+	exporter *otlp.Exporter // nil if OTLP disabled
 
 	pending map[string]chan *jsonrpc.Message // id -> response channel
 	mu      sync.Mutex
@@ -83,6 +87,32 @@ func Run(cfg *config.Config) error {
 		convergence: governance.NewConvergenceTracker(),
 		schemaCache: make(map[string]json.RawMessage),
 		pending:     make(map[string]chan *jsonrpc.Message),
+	}
+
+	// Initialize OTLP exporter if configured
+	if cfg.OTLPEndpoint != "" {
+		traceID := otlp.DeriveTraceID(ctrl.ID, auth.Epoch)
+		batchTimeout := time.Duration(cfg.OTLPBatchTimeout) * time.Millisecond
+		if batchTimeout <= 0 {
+			batchTimeout = 5 * time.Second
+		}
+		p.exporter = otlp.NewExporter(otlp.ExporterConfig{
+			Endpoint: cfg.OTLPEndpoint,
+			Headers:  cfg.OTLPHeaders,
+			Resource: otlp.Resource{
+				Attributes: []otlp.KeyValue{
+					{Key: "service.name", Value: otlp.StringVal("mcp-guardian")},
+					{Key: "mcp.controller.id", Value: otlp.StringVal(ctrl.ID)},
+					{Key: "mcp.enforcement", Value: otlp.StringVal(cfg.Enforcement)},
+				},
+			},
+			Scope:        otlp.InstrumentationScope{Name: "mcp-guardian"},
+			TraceID:      traceID,
+			BatchSize:    cfg.OTLPBatchSize,
+			BatchTimeout: batchTimeout,
+		})
+		defer p.exporter.Shutdown()
+		logStderr("mcp-guardian: OTLP export enabled (endpoint=%s)\n", cfg.OTLPEndpoint)
 	}
 
 	logStderr("mcp-guardian: proxy started (controller=%s, epoch=%d)\n", ctrl.ID, auth.Epoch)
@@ -229,6 +259,27 @@ func (p *Proxy) handleToolsList(msg *jsonrpc.Message, raw []byte) error {
 				}
 			}
 
+			// Apply tool masking
+			if len(p.cfg.MaskPatterns) > 0 {
+				if p.cfg.Enforcement == "strict" {
+					var kept []jsonrpc.ToolInfo
+					for _, tool := range result.Tools {
+						if mask.Match(tool.Name, p.cfg.MaskPatterns) {
+							logStderr("mcp-guardian: masked tool: %s\n", tool.Name)
+						} else {
+							kept = append(kept, tool)
+						}
+					}
+					result.Tools = kept
+				} else {
+					for _, tool := range result.Tools {
+						if mask.Match(tool.Name, p.cfg.MaskPatterns) {
+							logStderr("mcp-guardian: [advisory] would mask tool: %s\n", tool.Name)
+						}
+					}
+				}
+			}
+
 			// Inject meta-tools
 			result.Tools = append(result.Tools, metatool.Definitions()...)
 
@@ -250,6 +301,22 @@ func (p *Proxy) handleToolsCall(msg *jsonrpc.Message, raw []byte) error {
 	// Check for meta-tools
 	if metatool.IsMetaTool(params.Name) {
 		return p.handleMetaTool(msg, params)
+	}
+
+	// Check tool masking
+	if len(p.cfg.MaskPatterns) > 0 && mask.Match(params.Name, p.cfg.MaskPatterns) {
+		if p.cfg.Enforcement == "strict" {
+			logStderr("mcp-guardian: blocked masked tool call: %s\n", params.Name)
+			target := classify.ExtractTarget(params.Arguments)
+			gateResult := governance.GateResult{
+				Target:       target,
+				MutationType: "masked",
+			}
+			p.recordReceipt(params.Name, params.Arguments, gateResult, "blocked", 0, "tool not found: "+params.Name)
+			errResp := jsonrpc.NewErrorResponse(msg.ID, -32601, "tool not found: "+params.Name)
+			return writeMessage(errResp)
+		}
+		logStderr("mcp-guardian: [advisory] masked tool called: %s\n", params.Name)
 	}
 
 	// Run governance pipeline
@@ -430,6 +497,11 @@ func (p *Proxy) recordReceipt(toolName string, args map[string]interface{}, gate
 
 	if err := p.ledger.Append(r); err != nil {
 		logStderr("mcp-guardian: receipt write error: %v\n", err)
+	}
+
+	// Export to OTLP if enabled
+	if p.exporter != nil {
+		p.exporter.Export(r)
 	}
 
 	// Set genesis hash on first receipt
