@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -13,6 +14,10 @@ func View(stateDir, filterTool, filterOutcome string, limit int) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No receipts.")
+			return nil
+		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 

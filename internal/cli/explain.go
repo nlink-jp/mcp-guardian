@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
@@ -12,6 +13,10 @@ func Explain(stateDir string) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No receipts.")
+			return nil
+		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
@@ -82,6 +87,10 @@ func Receipts(stateDir string) error {
 	path := filepath.Join(stateDir, "receipts.jsonl")
 	records, err := receipt.LoadReceipts(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No receipts.")
+			return nil
+		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
