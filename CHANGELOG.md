@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.5.0] - 2026-04-05
+
+### Changed
+
+- **Breaking: `--profile` is now required for proxy mode** -- All transport, authentication, governance, and masking settings are configured exclusively via server profiles (JSON files). No inline CLI flags.
+- **Breaking: Removed 22 inline CLI flags** -- `--enforcement`, `--schema`, `--max-calls`, `--timeout`, `--transport`, `--upstream-url`, `--sse-header`, `--oauth2-*`, `--token-command*`, `--mask`, `--mask-file`, `--otlp-*`, `--webhook`.
+- **Breaking: Removed `--wrap` / `--unwrap`** -- Use `claude mcp add <name> -- mcp-guardian --profile <name>` directly.
+- CLI reduced from 34 flags to 13. `main.go` reduced from 405 to 170 lines.
+- Analysis commands (`--view`, `--verify`, `--explain`, `--receipts`) now require `--profile` or `--state-dir`.
+
+### Fixed
+
+- Analysis commands show "No receipts" instead of error when receipts file does not exist.
+- E2E test no longer opens browser (MCP_GUARDIAN_NO_BROWSER environment variable).
+- AutoDiscoveryLogin E2E test simulates browser redirect instead of timing out.
+
 ## [0.4.0] - 2026-04-05
 
 ### Added
