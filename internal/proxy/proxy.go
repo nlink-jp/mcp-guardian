@@ -85,7 +85,7 @@ func Run(cfg *config.Config) error {
 	}
 
 	// Create upstream transport based on config
-	up, err := createUpstreamTransport(cfg)
+	up, err := CreateUpstreamTransport(cfg)
 	if err != nil {
 		return fmt.Errorf("start upstream: %w", err)
 	}
@@ -557,8 +557,8 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// createUpstreamTransport creates the appropriate Transport based on config.
-func createUpstreamTransport(cfg *config.Config) (transport.Transport, error) {
+// CreateUpstreamTransport creates the appropriate Transport based on config.
+func CreateUpstreamTransport(cfg *config.Config) (transport.Transport, error) {
 	switch cfg.Transport {
 	case "sse":
 		var opts []transport.SSEOption

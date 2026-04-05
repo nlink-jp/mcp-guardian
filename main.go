@@ -18,6 +18,7 @@ func main() {
 	profileFlag := flag.String("profile", "", "Server profile name or path")
 	profilesCmd := flag.Bool("profiles", false, "List available server profiles")
 	loginCmd := flag.String("login", "", "Perform OAuth2 browser login for a profile")
+	inspectCmd := flag.Bool("inspect", false, "Show server info and available tools")
 
 	// Global config
 	globalConfig := flag.String("config", "", "Path to global config file (JSON)")
@@ -63,6 +64,19 @@ func main() {
 	// OAuth2 browser login
 	if *loginCmd != "" {
 		if err := cli.Login(*loginCmd); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Inspect server
+	if *inspectCmd {
+		if *profileFlag == "" {
+			fmt.Fprintln(os.Stderr, "error: --profile is required with --inspect")
+			os.Exit(1)
+		}
+		if err := cli.Inspect(*profileFlag, *globalConfig); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
