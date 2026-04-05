@@ -4,22 +4,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
-// GlobalConfig represents the global/system configuration file.
+// GlobalConfig represents the system-wide configuration file.
 // Contains telemetry settings and default values for all MCP server instances.
+//
+// Format:
+//
+//	{ "telemetry": { "otlp": {...}, "webhooks": [...] }, "defaults": {...} }
 type GlobalConfig struct {
+	Telemetry *TelemetryBlock `json:"telemetry,omitempty"`
+	Defaults  *DefaultsBlock  `json:"defaults,omitempty"`
+}
+
+// TelemetryBlock groups telemetry settings under a single key.
+type TelemetryBlock struct {
 	OTLP     *OTLPConfig    `json:"otlp,omitempty"`
+	Splunk   *SplunkConfig  `json:"splunk,omitempty"`
 	Webhooks []string       `json:"webhooks,omitempty"`
-	Defaults *DefaultsBlock `json:"defaults,omitempty"`
+}
+
+// SplunkConfig holds Splunk HEC export settings.
+type SplunkConfig struct {
+	Endpoint     string `json:"endpoint"`
+	Token        string `json:"token"`
+	Index        string `json:"index,omitempty"`
+	BatchSize    *int   `json:"batchSize,omitempty"`
+	BatchTimeout *int   `json:"batchTimeout,omitempty"`
 }
 
 // DefaultsBlock holds default values for per-server settings.
 type DefaultsBlock struct {
-	Enforcement string `json:"enforcement,omitempty"`
-	Schema      string `json:"schema,omitempty"`
-	MaxCalls    *int   `json:"maxCalls,omitempty"`
-	Timeout     *int   `json:"timeout,omitempty"`
+	Enforcement       string `json:"enforcement,omitempty"`
+	Schema            string `json:"schema,omitempty"`
+	MaxCalls          *int   `json:"maxCalls,omitempty"`
+	Timeout           *int   `json:"timeout,omitempty"`
+	MaxReceiptAgeDays *int   `json:"maxReceiptAgeDays,omitempty"`
 }
 
 // OTLPConfig holds OTLP export settings.
@@ -28,16 +49,6 @@ type OTLPConfig struct {
 	Headers      map[string]string `json:"headers,omitempty"`
 	BatchSize    *int              `json:"batchSize,omitempty"`
 	BatchTimeout *int              `json:"batchTimeout,omitempty"`
-}
-
-// ServerConfig represents the per-MCP-server configuration file.
-type ServerConfig struct {
-	Enforcement string   `json:"enforcement,omitempty"`
-	Schema      string   `json:"schema,omitempty"`
-	MaxCalls    *int     `json:"maxCalls,omitempty"`
-	Timeout     *int     `json:"timeout,omitempty"`
-	StateDir    string   `json:"stateDir,omitempty"`
-	Mask        []string `json:"mask,omitempty"`
 }
 
 // LoadGlobal reads and parses a global configuration file.
@@ -53,21 +64,39 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	return &gc, nil
 }
 
-// LoadServer reads and parses a per-server configuration file.
-func LoadServer(path string) (*ServerConfig, error) {
-	data, err := os.ReadFile(path)
+// GlobalConfigDir returns the default global config directory path.
+func GlobalConfigDir() string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("read server config: %w", err)
+		return ""
 	}
-	var sc ServerConfig
-	if err := json.Unmarshal(data, &sc); err != nil {
-		return nil, fmt.Errorf("parse server config: %w", err)
+	return filepath.Join(home, ".config", "mcp-guardian")
+}
+
+// GlobalConfigPath returns the default global config file path.
+func GlobalConfigPath() string {
+	dir := GlobalConfigDir()
+	if dir == "" {
+		return ""
 	}
-	return &sc, nil
+	return filepath.Join(dir, "config.json")
+}
+
+// LoadGlobalAuto loads the global config from the default path if it exists.
+// Returns (nil, nil) when the file does not exist.
+func LoadGlobalAuto() (*GlobalConfig, error) {
+	path := GlobalConfigPath()
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	return LoadGlobal(path)
 }
 
 // ApplyTo merges global config into a Config.
-// Applies defaults block as base values, plus OTLP and webhooks.
+// Applies defaults block as base values, plus telemetry (OTLP and webhooks).
 func (gc *GlobalConfig) ApplyTo(cfg *Config) {
 	if gc.Defaults != nil {
 		if gc.Defaults.Enforcement != "" {
@@ -82,50 +111,51 @@ func (gc *GlobalConfig) ApplyTo(cfg *Config) {
 		if gc.Defaults.Timeout != nil {
 			cfg.TimeoutMs = *gc.Defaults.Timeout
 		}
-	}
-	if len(gc.Webhooks) > 0 {
-		cfg.WebhookURLs = append(gc.Webhooks, cfg.WebhookURLs...)
-	}
-	if gc.OTLP != nil {
-		if gc.OTLP.Endpoint != "" {
-			cfg.OTLPEndpoint = gc.OTLP.Endpoint
+		if gc.Defaults.MaxReceiptAgeDays != nil {
+			cfg.MaxReceiptAgeDays = *gc.Defaults.MaxReceiptAgeDays
 		}
-		if len(gc.OTLP.Headers) > 0 {
-			if cfg.OTLPHeaders == nil {
-				cfg.OTLPHeaders = make(map[string]string)
+	}
+	if gc.Telemetry != nil {
+		if len(gc.Telemetry.Webhooks) > 0 {
+			cfg.WebhookURLs = append(gc.Telemetry.Webhooks, cfg.WebhookURLs...)
+		}
+		otlp := gc.Telemetry.OTLP
+		if otlp != nil {
+			if otlp.Endpoint != "" {
+				cfg.OTLPEndpoint = otlp.Endpoint
 			}
-			for k, v := range gc.OTLP.Headers {
-				cfg.OTLPHeaders[k] = v
+			if len(otlp.Headers) > 0 {
+				if cfg.OTLPHeaders == nil {
+					cfg.OTLPHeaders = make(map[string]string)
+				}
+				for k, v := range otlp.Headers {
+					cfg.OTLPHeaders[k] = v
+				}
+			}
+			if otlp.BatchSize != nil {
+				cfg.OTLPBatchSize = *otlp.BatchSize
+			}
+			if otlp.BatchTimeout != nil {
+				cfg.OTLPBatchTimeout = *otlp.BatchTimeout
 			}
 		}
-		if gc.OTLP.BatchSize != nil {
-			cfg.OTLPBatchSize = *gc.OTLP.BatchSize
+		splunk := gc.Telemetry.Splunk
+		if splunk != nil {
+			if splunk.Endpoint != "" {
+				cfg.SplunkHECEndpoint = splunk.Endpoint
+			}
+			if splunk.Token != "" {
+				cfg.SplunkHECToken = splunk.Token
+			}
+			if splunk.Index != "" {
+				cfg.SplunkHECIndex = splunk.Index
+			}
+			if splunk.BatchSize != nil {
+				cfg.SplunkHECBatchSize = *splunk.BatchSize
+			}
+			if splunk.BatchTimeout != nil {
+				cfg.SplunkHECBatchTimeout = *splunk.BatchTimeout
+			}
 		}
-		if gc.OTLP.BatchTimeout != nil {
-			cfg.OTLPBatchTimeout = *gc.OTLP.BatchTimeout
-		}
-	}
-}
-
-// ApplyTo merges server config into a Config.
-// Only non-zero/non-nil values are applied. Mask patterns are prepended.
-func (sc *ServerConfig) ApplyTo(cfg *Config) {
-	if sc.Enforcement != "" {
-		cfg.Enforcement = sc.Enforcement
-	}
-	if sc.Schema != "" {
-		cfg.SchemaMode = sc.Schema
-	}
-	if sc.MaxCalls != nil {
-		cfg.MaxCalls = *sc.MaxCalls
-	}
-	if sc.Timeout != nil {
-		cfg.TimeoutMs = *sc.Timeout
-	}
-	if sc.StateDir != "" {
-		cfg.StateDir = sc.StateDir
-	}
-	if len(sc.Mask) > 0 {
-		cfg.MaskPatterns = append(sc.Mask, cfg.MaskPatterns...)
 	}
 }

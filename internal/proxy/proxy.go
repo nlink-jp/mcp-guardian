@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/nlink-jp/mcp-guardian/internal/classify"
 	"github.com/nlink-jp/mcp-guardian/internal/config"
+	"github.com/nlink-jp/mcp-guardian/internal/export"
 	"github.com/nlink-jp/mcp-guardian/internal/governance"
 	"github.com/nlink-jp/mcp-guardian/internal/jsonrpc"
 	"github.com/nlink-jp/mcp-guardian/internal/mask"
@@ -18,20 +18,21 @@ import (
 	"github.com/nlink-jp/mcp-guardian/internal/otlp"
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
 	"github.com/nlink-jp/mcp-guardian/internal/state"
+	"github.com/nlink-jp/mcp-guardian/internal/transport"
 	"github.com/nlink-jp/mcp-guardian/internal/webhook"
 )
 
 // Proxy is the core MCP governance proxy.
 type Proxy struct {
 	cfg         *config.Config
-	upstream    *Upstream
+	upstream    transport.Transport
 	ledger      *receipt.Ledger
 	controller  *state.Controller
 	authority   *state.Authority
 	convergence *governance.ConvergenceTracker
 	schemaCache map[string]json.RawMessage // toolName -> inputSchema
 
-	exporter *otlp.Exporter // nil if OTLP disabled
+	exporters []export.Exporter // telemetry exporters (OTLP, Splunk HEC, etc.)
 
 	pending map[string]chan *jsonrpc.Message // id -> response channel
 	mu      sync.Mutex
@@ -60,6 +61,17 @@ func Run(cfg *config.Config) error {
 		return fmt.Errorf("ledger: %w", err)
 	}
 
+	// Auto-purge old receipts on startup
+	if cfg.MaxReceiptAgeDays > 0 {
+		maxAge := time.Duration(cfg.MaxReceiptAgeDays) * 24 * time.Hour
+		purged, err := ledger.Purge(maxAge)
+		if err != nil {
+			logStderr("mcp-guardian: receipt purge error: %v\n", err)
+		} else if purged > 0 {
+			logStderr("mcp-guardian: purged %d receipts older than %d days\n", purged, cfg.MaxReceiptAgeDays)
+		}
+	}
+
 	// Set genesis hash if first run
 	if auth.GenesisHash == "" && ledger.Seq() > 0 {
 		records, err := ledger.LoadAll()
@@ -72,7 +84,8 @@ func Run(cfg *config.Config) error {
 		}
 	}
 
-	up, err := StartUpstream(cfg.Upstream, cfg.UpstreamArgs)
+	// Create upstream transport based on config
+	up, err := createUpstreamTransport(cfg)
 	if err != nil {
 		return fmt.Errorf("start upstream: %w", err)
 	}
@@ -89,14 +102,14 @@ func Run(cfg *config.Config) error {
 		pending:     make(map[string]chan *jsonrpc.Message),
 	}
 
-	// Initialize OTLP exporter if configured
+	// Initialize telemetry exporters
 	if cfg.OTLPEndpoint != "" {
 		traceID := otlp.DeriveTraceID(ctrl.ID, auth.Epoch)
 		batchTimeout := time.Duration(cfg.OTLPBatchTimeout) * time.Millisecond
 		if batchTimeout <= 0 {
 			batchTimeout = 5 * time.Second
 		}
-		p.exporter = otlp.NewExporter(otlp.ExporterConfig{
+		p.exporters = append(p.exporters, otlp.NewExporter(otlp.ExporterConfig{
 			Endpoint: cfg.OTLPEndpoint,
 			Headers:  cfg.OTLPHeaders,
 			Resource: otlp.Resource{
@@ -110,19 +123,22 @@ func Run(cfg *config.Config) error {
 			TraceID:      traceID,
 			BatchSize:    cfg.OTLPBatchSize,
 			BatchTimeout: batchTimeout,
-		})
-		defer p.exporter.Shutdown()
+		}))
 		logStderr("mcp-guardian: OTLP export enabled (endpoint=%s)\n", cfg.OTLPEndpoint)
 	}
-
-	logStderr("mcp-guardian: proxy started (controller=%s, epoch=%d)\n", ctrl.ID, auth.Epoch)
-
-	// Forward upstream stderr to our stderr
-	go func() {
-		io.Copy(os.Stderr, up.Stderr())
+	if cfg.SplunkHECEndpoint != "" {
+		p.exporters = append(p.exporters, NewSplunkHECExporter(cfg))
+		logStderr("mcp-guardian: Splunk HEC export enabled (endpoint=%s)\n", cfg.SplunkHECEndpoint)
+	}
+	defer func() {
+		for _, e := range p.exporters {
+			e.Shutdown()
+		}
 	}()
 
-	// Read upstream stdout and dispatch responses
+	logStderr("mcp-guardian: proxy started (controller=%s, epoch=%d, transport=%s)\n", ctrl.ID, auth.Epoch, cfg.Transport)
+
+	// Read upstream and dispatch responses
 	go p.readUpstream()
 
 	// Read agent stdin and route messages
@@ -445,10 +461,12 @@ func (p *Proxy) forwardRequest(msg *jsonrpc.Message, raw []byte) (*jsonrpc.Messa
 
 	// Wait for response with timeout
 	timeout := time.Duration(p.cfg.TimeoutMs) * time.Millisecond
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		p.mu.Lock()
 		delete(p.pending, id)
 		p.mu.Unlock()
@@ -499,9 +517,9 @@ func (p *Proxy) recordReceipt(toolName string, args map[string]interface{}, gate
 		logStderr("mcp-guardian: receipt write error: %v\n", err)
 	}
 
-	// Export to OTLP if enabled
-	if p.exporter != nil {
-		p.exporter.Export(r)
+	// Export to telemetry backends
+	for _, e := range p.exporters {
+		e.Export(r)
 	}
 
 	// Set genesis hash on first receipt
@@ -519,7 +537,11 @@ func writeMessage(msg *jsonrpc.Message) error {
 	return writeToAgent(data)
 }
 
+var stdoutMu sync.Mutex
+
 func writeToAgent(data []byte) error {
+	stdoutMu.Lock()
+	defer stdoutMu.Unlock()
 	_, err := os.Stdout.Write(append(data, '\n'))
 	return err
 }
@@ -533,4 +555,64 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// createUpstreamTransport creates the appropriate Transport based on config.
+func createUpstreamTransport(cfg *config.Config) (transport.Transport, error) {
+	switch cfg.Transport {
+	case "sse":
+		var opts []transport.SSEOption
+
+		// Configure authentication
+		// Try stored tokens first (from --login with discovery or explicit config)
+		storedProvider, storedErr := transport.NewStoredTokenProvider(transport.StoredTokenConfig{
+			StateDir:     cfg.StateDir,
+			TokenURL:     cfg.OAuth2TokenURL,
+			ClientID:     cfg.OAuth2ClientID,
+			ClientSecret: cfg.OAuth2ClientSecret,
+		})
+		if cfg.OAuth2Flow == "authorization_code" || (storedErr == nil && cfg.OAuth2TokenURL == "" && cfg.TokenCommand == "") {
+			if storedErr != nil {
+				return nil, fmt.Errorf("no stored tokens (run --login first): %w", storedErr)
+			}
+			opts = append(opts, transport.WithTokenProvider(storedProvider))
+			logStderr("mcp-guardian: OAuth2 authorization_code enabled (stored tokens)\n")
+		} else if cfg.OAuth2TokenURL != "" {
+			provider := transport.NewOAuth2Provider(transport.OAuth2Config{
+				TokenURL:     cfg.OAuth2TokenURL,
+				ClientID:     cfg.OAuth2ClientID,
+				ClientSecret: cfg.OAuth2ClientSecret,
+				Scopes:       cfg.OAuth2Scopes,
+			})
+			opts = append(opts, transport.WithTokenProvider(provider))
+			logStderr("mcp-guardian: OAuth2 client_credentials enabled (token_url=%s)\n", cfg.OAuth2TokenURL)
+		} else if cfg.TokenCommand != "" {
+			provider := transport.NewCommandProvider(cfg.TokenCommand, cfg.TokenCommandArgs, 0)
+			opts = append(opts, transport.WithTokenProvider(provider))
+			logStderr("mcp-guardian: token command enabled (cmd=%s)\n", cfg.TokenCommand)
+		}
+
+		return transport.NewSSEClientTransport(cfg.UpstreamURL, cfg.SSEHeaders, opts...)
+	case "stdio", "":
+		result, err := transport.NewProcessTransport(cfg.Upstream, cfg.UpstreamArgs)
+		if err != nil {
+			return nil, err
+		}
+		// Forward process stderr to our stderr
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := result.Stderr.Read(buf)
+				if n > 0 {
+					os.Stderr.Write(buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
+		}()
+		return result.Transport, nil
+	default:
+		return nil, fmt.Errorf("unknown transport type: %s", cfg.Transport)
+	}
 }

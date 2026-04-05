@@ -18,7 +18,7 @@ type WrapOptions struct {
 	MaskPatterns []string
 	MaskFile     string
 	GlobalConfig string // path to global config file
-	ServerConfig string // path to per-server config file
+	ProfileName  string // server profile name or path
 }
 
 // Wrap modifies .mcp.json to interpose the proxy on a server.
@@ -80,25 +80,27 @@ func WrapWithOptions(opts WrapOptions) error {
 	origCommand, _ := server["command"].(string)
 	origArgs, _ := toStringSlice(server["args"])
 
-	newArgs := []string{
-		"--enforcement", opts.Enforcement,
-		"--state-dir", opts.StateDir + "-" + serverName,
-	}
+	var newArgs []string
 
-	// Add mask options
-	for _, pattern := range opts.MaskPatterns {
-		newArgs = append(newArgs, "--mask", pattern)
-	}
-	if opts.MaskFile != "" {
-		newArgs = append(newArgs, "--mask-file", opts.MaskFile)
-	}
-
-	// Add config files
-	if opts.GlobalConfig != "" {
-		newArgs = append(newArgs, "--config", opts.GlobalConfig)
-	}
-	if opts.ServerConfig != "" {
-		newArgs = append(newArgs, "--server-config", opts.ServerConfig)
+	if opts.ProfileName != "" {
+		// Profile mode: profile contains all server settings
+		newArgs = append(newArgs, "--profile", opts.ProfileName)
+		if opts.GlobalConfig != "" {
+			newArgs = append(newArgs, "--config", opts.GlobalConfig)
+		}
+	} else {
+		// Inline mode: individual flags
+		newArgs = append(newArgs, "--enforcement", opts.Enforcement)
+		newArgs = append(newArgs, "--state-dir", opts.StateDir+"-"+serverName)
+		for _, pattern := range opts.MaskPatterns {
+			newArgs = append(newArgs, "--mask", pattern)
+		}
+		if opts.MaskFile != "" {
+			newArgs = append(newArgs, "--mask-file", opts.MaskFile)
+		}
+		if opts.GlobalConfig != "" {
+			newArgs = append(newArgs, "--config", opts.GlobalConfig)
+		}
 	}
 
 	newArgs = append(newArgs, "--", origCommand)

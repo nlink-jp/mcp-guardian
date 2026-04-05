@@ -40,12 +40,32 @@ func main() {
 
 	// Config files
 	globalConfig := flag.String("config", "", "Path to global config file (JSON)")
-	serverConfig := flag.String("server-config", "", "Path to per-server config file (JSON)")
+
+	// Server profiles
+	profileFlag := flag.String("profile", "", "Server profile name or path")
+	profilesCmd := flag.Bool("profiles", false, "List available server profiles")
+	loginCmd := flag.String("login", "", "Perform OAuth2 browser login for a profile")
 
 	// Tool masking
 	var maskPatterns multiFlag
 	flag.Var(&maskPatterns, "mask", "Tool mask pattern (repeatable, supports wildcards)")
 	maskFile := flag.String("mask-file", "", "Path to mask patterns file (one pattern per line)")
+
+	// Transport mode
+	transportMode := flag.String("transport", "stdio", "Upstream transport: stdio or sse")
+	upstreamURL := flag.String("upstream-url", "", "Upstream MCP server URL (for sse transport)")
+	var sseHeaders headerFlag
+	flag.Var(&sseHeaders, "sse-header", "SSE HTTP header KEY=VALUE (repeatable)")
+
+	// OAuth2 authentication (for sse transport)
+	oauth2TokenURL := flag.String("oauth2-token-url", "", "OAuth2 token endpoint URL")
+	oauth2ClientID := flag.String("oauth2-client-id", "", "OAuth2 client ID")
+	oauth2ClientSecret := flag.String("oauth2-client-secret", "", "OAuth2 client secret")
+	var oauth2Scopes multiFlag
+	flag.Var(&oauth2Scopes, "oauth2-scope", "OAuth2 scope (repeatable)")
+	tokenCommand := flag.String("token-command", "", "External command to obtain Bearer token")
+	var tokenCommandArgs multiFlag
+	flag.Var(&tokenCommandArgs, "token-command-arg", "Token command argument (repeatable)")
 
 	// OTLP export
 	otlpEndpoint := flag.String("otlp-endpoint", "", "OTLP/HTTP endpoint URL (empty = disabled)")
@@ -97,9 +117,43 @@ func main() {
 		return
 	}
 
+	// List profiles
+	if *profilesCmd {
+		names, err := config.ListProfiles()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(names) == 0 {
+			fmt.Fprintf(os.Stderr, "No profiles found in %s\n", config.ProfileDir())
+		} else {
+			for _, name := range names {
+				fmt.Println(name)
+			}
+		}
+		return
+	}
+
+	// OAuth2 browser login
+	if *loginCmd != "" {
+		if err := cli.Login(*loginCmd); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Wrap/unwrap
 	if *wrapServer != "" {
-		if err := cli.Wrap(*wrapServer, *stateDir, *enforcement, *mcpConfigPath); err != nil {
+		opts := cli.WrapOptions{
+			ServerName:    *wrapServer,
+			StateDir:      *stateDir,
+			Enforcement:   *enforcement,
+			MCPConfigPath: *mcpConfigPath,
+			ProfileName:   *profileFlag,
+			GlobalConfig:  *globalConfig,
+		}
+		if err := cli.WrapWithOptions(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -122,16 +176,12 @@ func main() {
 
 	// Upstream command from trailing args (after --)
 	args := flag.Args()
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "error: upstream command required after --")
-		fmt.Fprintln(os.Stderr, "usage: mcp-guardian [options] -- command [args...]")
-		os.Exit(1)
-	}
 
-	// Proxy mode: build config with priority Defaults → config file → CLI flags
+	// Proxy mode: build config with priority Defaults → Global → Profile → CLI flags
 	cfg := config.Defaults()
 
-	// Layer 2: Apply global config (OTLP, webhooks, defaults)
+	// Layer 2: Apply global config (telemetry, org defaults)
+	// Auto-discover from ~/.config/mcp-guardian/config.json unless --config is explicit
 	if *globalConfig != "" {
 		gc, err := config.LoadGlobal(*globalConfig)
 		if err != nil {
@@ -139,16 +189,28 @@ func main() {
 			os.Exit(1)
 		}
 		gc.ApplyTo(cfg)
+	} else {
+		gc, err := config.LoadGlobalAuto()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to load global config: %v\n", err)
+		}
+		if gc != nil {
+			gc.ApplyTo(cfg)
+		}
 	}
 
-	// Layer 3: Apply server config (enforcement, mask, etc.)
-	if *serverConfig != "" {
-		sc, err := config.LoadServer(*serverConfig)
+	// Layer 3: Apply server profile
+	if *profileFlag != "" {
+		profile, err := config.ResolveProfile(*profileFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		sc.ApplyTo(cfg)
+		if err := profile.Validate(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		profile.ApplyTo(cfg)
 	}
 
 	// Layer 4: Apply explicitly set CLI flags (override config files)
@@ -186,6 +248,41 @@ func main() {
 		cfg.OTLPBatchTimeout = *otlpBatchTimeout
 	}
 
+	// Transport settings
+	if setFlags["transport"] {
+		cfg.Transport = *transportMode
+	}
+	if setFlags["upstream-url"] {
+		cfg.UpstreamURL = *upstreamURL
+	}
+	sseHeaderMap := sseHeaders.toMap()
+	if len(sseHeaderMap) > 0 {
+		if cfg.SSEHeaders == nil {
+			cfg.SSEHeaders = make(map[string]string)
+		}
+		for k, v := range sseHeaderMap {
+			cfg.SSEHeaders[k] = v
+		}
+	}
+
+	// OAuth2 settings
+	if setFlags["oauth2-token-url"] {
+		cfg.OAuth2TokenURL = *oauth2TokenURL
+	}
+	if setFlags["oauth2-client-id"] {
+		cfg.OAuth2ClientID = *oauth2ClientID
+	}
+	if setFlags["oauth2-client-secret"] {
+		cfg.OAuth2ClientSecret = *oauth2ClientSecret
+	}
+	if len(oauth2Scopes) > 0 {
+		cfg.OAuth2Scopes = append(cfg.OAuth2Scopes, []string(oauth2Scopes)...)
+	}
+	if setFlags["token-command"] {
+		cfg.TokenCommand = *tokenCommand
+		cfg.TokenCommandArgs = []string(tokenCommandArgs)
+	}
+
 	// CLI OTLP headers override config file headers for same keys
 	cliHeaders := otlpHeaders.toMap()
 	if len(cliHeaders) > 0 {
@@ -213,8 +310,19 @@ func main() {
 		cfg.MaskPatterns = append(cfg.MaskPatterns, filePatterns...)
 	}
 
-	cfg.Upstream = args[0]
-	cfg.UpstreamArgs = args[1:]
+	// Set upstream command for stdio transport
+	// Trailing args (-- command) override profile/config command if present
+	if cfg.Transport == "" || cfg.Transport == "stdio" {
+		if len(args) > 0 {
+			cfg.Upstream = args[0]
+			cfg.UpstreamArgs = args[1:]
+		} else if cfg.Upstream == "" {
+			fmt.Fprintln(os.Stderr, "error: upstream command required (use --profile or -- command [args...])")
+			fmt.Fprintln(os.Stderr, "usage: mcp-guardian [options] -- command [args...]")
+			fmt.Fprintln(os.Stderr, "       mcp-guardian --profile <name>")
+			os.Exit(1)
+		}
+	}
 
 	// Validate merged config
 	if err := cfg.Validate(); err != nil {

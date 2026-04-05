@@ -3,12 +3,14 @@ package proxy_test
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -935,165 +937,880 @@ func TestProxyE2E_OTLPExport(t *testing.T) {
 	}
 }
 
-func TestProxyE2E_ServerConfig(t *testing.T) {
+func TestProxyE2E_SplunkHECExport(t *testing.T) {
 	binary := buildBinary(t)
 	dir := t.TempDir()
 	serverPath := writeMockServer(t, dir)
 	stateDir := filepath.Join(dir, "state")
 
-	// Write per-server config with mask settings
-	srvCfg := filepath.Join(dir, "server.json")
-	srvContent := `{
-  "enforcement": "strict",
-  "mask": ["fail_*"]
-}`
-	if err := os.WriteFile(srvCfg, []byte(srvContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+	var mu sync.Mutex
+	var hecRequests [][]byte
+	var receivedAuth string
 
-	input := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
-		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
-	}, "\n") + "\n"
+	hecSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		receivedAuth = r.Header.Get("Authorization")
+		body, _ := io.ReadAll(r.Body)
+		hecRequests = append(hecRequests, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hecSrv.Close()
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--server-config", srvCfg,
-		"--", "sh", serverPath,
-	}, input)
-
-	if len(results) < 3 {
-		t.Fatalf("expected at least 3 responses, got %d", len(results))
-	}
-
-	// fail_tool should be masked (from server config)
-	result2, _ := results[1]["result"].(map[string]interface{})
-	tools, _ := result2["tools"].([]interface{})
-	for _, tool := range tools {
-		tm, _ := tool.(map[string]interface{})
-		if tm["name"] == "fail_tool" {
-			t.Error("fail_tool should be masked via server config")
-		}
-	}
-
-	// tools/call fail_tool should be blocked
-	r3 := results[2]
-	if _, hasError := r3["error"]; !hasError {
-		t.Error("masked tool call via server config should return an error")
-	}
-}
-
-func TestProxyE2E_ServerConfigCLIOverride(t *testing.T) {
-	binary := buildBinary(t)
-	dir := t.TempDir()
-	serverPath := writeMockServer(t, dir)
-	stateDir := filepath.Join(dir, "state")
-
-	// Server config sets enforcement=strict
-	srvCfg := filepath.Join(dir, "server.json")
-	srvContent := `{
-  "enforcement": "strict",
-  "mask": ["fail_*"]
-}`
-	if err := os.WriteFile(srvCfg, []byte(srvContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	input := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
-		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
-	}, "\n") + "\n"
-
-	// CLI overrides enforcement to advisory — mask should not block
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--server-config", srvCfg,
-		"--enforcement", "advisory",
-		"--", "sh", serverPath,
-	}, input)
-
-	if len(results) < 3 {
-		t.Fatalf("expected at least 3 responses, got %d", len(results))
-	}
-
-	// In advisory mode (CLI override), fail_tool should still appear in tools/list
-	result2, _ := results[1]["result"].(map[string]interface{})
-	tools, _ := result2["tools"].([]interface{})
-	found := false
-	for _, tool := range tools {
-		tm, _ := tool.(map[string]interface{})
-		if tm["name"] == "fail_tool" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("advisory mode (CLI override) should not mask tools from tools/list")
-	}
-
-	// tools/call fail_tool should be forwarded (not blocked) in advisory mode
-	r3 := results[2]
-	if _, hasError := r3["error"]; hasError {
-		t.Error("advisory mode (CLI override) should not block masked tool calls")
-	}
-}
-
-func TestProxyE2E_GlobalAndServerConfig(t *testing.T) {
-	binary := buildBinary(t)
-	dir := t.TempDir()
-	serverPath := writeMockServer(t, dir)
-	stateDir := filepath.Join(dir, "state")
-
-	// Global config: sets defaults enforcement=advisory
-	globalCfg := filepath.Join(dir, "global.json")
-	globalContent := `{
-  "defaults": {
-    "enforcement": "advisory"
+	// Write global config with Splunk HEC
+	globalCfg := filepath.Join(dir, "config.json")
+	globalContent := fmt.Sprintf(`{
+  "telemetry": {
+    "splunk": {
+      "endpoint": %q,
+      "token": "e2e-hec-token",
+      "index": "mcp-test",
+      "batchSize": 1
+    }
   }
-}`
+}`, hecSrv.URL)
 	os.WriteFile(globalCfg, []byte(globalContent), 0644)
 
-	// Server config: overrides enforcement=strict, adds mask
-	srvCfg := filepath.Join(dir, "server.json")
-	srvContent := `{
-  "enforcement": "strict",
-  "mask": ["fail_*"]
-}`
-	os.WriteFile(srvCfg, []byte(srvContent), 0644)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "advisory",
+		"--config", globalCfg,
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 responses, got %d", len(results))
+	}
+
+	// Wait for async HEC sends
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have received HEC events
+	if len(hecRequests) < 1 {
+		t.Fatalf("expected at least 1 HEC request, got %d", len(hecRequests))
+	}
+
+	// Verify auth header
+	if receivedAuth != "Splunk e2e-hec-token" {
+		t.Errorf("Authorization=%q, want 'Splunk e2e-hec-token'", receivedAuth)
+	}
+
+	// Parse first HEC event
+	var event struct {
+		Source     string                 `json:"source"`
+		SourceType string                `json:"sourcetype"`
+		Index      string                `json:"index"`
+		Event      map[string]interface{} `json:"event"`
+	}
+	if err := json.Unmarshal(hecRequests[0], &event); err != nil {
+		// HEC events are newline-delimited, try splitting
+		for i, b := range hecRequests[0] {
+			if b == '\n' {
+				json.Unmarshal(hecRequests[0][:i], &event)
+				break
+			}
+		}
+	}
+
+	if event.Source != "mcp-guardian" {
+		t.Errorf("source=%q, want mcp-guardian", event.Source)
+	}
+	if event.Index != "mcp-test" {
+		t.Errorf("index=%q, want mcp-test", event.Index)
+	}
+	if event.Event["toolName"] != "echo_tool" {
+		t.Errorf("toolName=%v, want echo_tool", event.Event["toolName"])
+	}
+	if event.Event["outcome"] != "success" {
+		t.Errorf("outcome=%v, want success", event.Event["outcome"])
+	}
+}
+
+func TestProxyE2E_SplunkHECAndOTLP(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+	stateDir := filepath.Join(dir, "state")
+
+	var otlpMu sync.Mutex
+	var otlpCount int
+	otlpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otlpMu.Lock()
+		otlpCount++
+		otlpMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer otlpSrv.Close()
+
+	var hecMu sync.Mutex
+	var hecCount int
+	hecSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hecMu.Lock()
+		hecCount++
+		hecMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hecSrv.Close()
+
+	globalCfg := filepath.Join(dir, "config.json")
+	globalContent := fmt.Sprintf(`{
+  "telemetry": {
+    "otlp": { "endpoint": %q, "batchSize": 1 },
+    "splunk": { "endpoint": %q, "token": "tok", "batchSize": 1 }
+  }
+}`, otlpSrv.URL, hecSrv.URL)
+	os.WriteFile(globalCfg, []byte(globalContent), 0644)
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--enforcement", "advisory",
+		"--config", globalCfg,
+		"--", "sh", serverPath,
+	}, input)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 responses, got %d", len(results))
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	otlpMu.Lock()
+	oc := otlpCount
+	otlpMu.Unlock()
+
+	hecMu.Lock()
+	hc := hecCount
+	hecMu.Unlock()
+
+	if oc == 0 {
+		t.Error("expected OTLP requests, got 0")
+	}
+	if hc == 0 {
+		t.Error("expected Splunk HEC requests, got 0")
+	}
+}
+
+// startMockSSEMCPServer starts an HTTP server that simulates an MCP server
+// using the Streamable HTTP transport. It responds to JSON-RPC requests
+// with either JSON or SSE responses based on the request method.
+func startMockSSEMCPServer(t *testing.T, useSSE bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var msg struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		json.Unmarshal(body, &msg)
+
+		id := string(msg.ID)
+		w.Header().Set("Mcp-Session-Id", "e2e-test-session")
+
+		var response string
+		switch msg.Method {
+		case "initialize":
+			response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"mock-sse","version":"0.1"}}}`, id)
+		case "tools/list":
+			response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo_tool","description":"echo","inputSchema":{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]}},{"name":"fail_tool","description":"always fails","inputSchema":{"type":"object","properties":{}}}]}}`, id)
+		case "tools/call":
+			var params struct {
+				Name string `json:"name"`
+			}
+			json.Unmarshal(msg.Params, &params)
+			switch params.Name {
+			case "echo_tool":
+				response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, id)
+			case "fail_tool":
+				response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"Permission denied: EACCES"}],"isError":true}}`, id)
+			default:
+				response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"tool not found"}}`, id)
+			}
+		default:
+			response = fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{}}`, id)
+		}
+
+		if useSSE {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", response)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, response)
+		}
+	}))
+}
+
+func TestProxyE2E_SSETransport_JSON(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	// Start mock MCP server with JSON responses
+	srv := startMockSSEMCPServer(t, false)
+	defer srv.Close()
 
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
 		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	// Server config (strict) should override global defaults (advisory)
 	results := runGuardian(t, binary, []string{
 		"--state-dir", stateDir,
-		"--config", globalCfg,
-		"--server-config", srvCfg,
-		"--", "sh", serverPath,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
 	}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
 	}
 
-	// Server enforcement=strict → fail_tool should be masked
-	result2, _ := results[1]["result"].(map[string]interface{})
-	tools, _ := result2["tools"].([]interface{})
-	for _, tool := range tools {
-		tm, _ := tool.(map[string]interface{})
-		if tm["name"] == "fail_tool" {
-			t.Error("fail_tool should be masked (server overrides global)")
-		}
+	// Check initialize response
+	if results[0]["id"] != "1" {
+		t.Errorf("expected id=1, got %v", results[0]["id"])
 	}
 
-	// Blocked
-	r3 := results[2]
-	if _, hasError := r3["error"]; !hasError {
-		t.Error("fail_tool should be blocked in strict mode")
+	// Check tools/list — should include meta-tools
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	if len(tools) != 7 {
+		t.Errorf("expected 7 tools (2 + 5 meta), got %d", len(tools))
+	}
+
+	// Check tool call response
+	result3, _ := results[2]["result"].(map[string]interface{})
+	content, _ := result3["content"].([]interface{})
+	if len(content) == 0 {
+		t.Fatal("expected content in tool call response")
+	}
+	item, _ := content[0].(map[string]interface{})
+	if item["text"] != "ok" {
+		t.Errorf("expected text=ok, got %v", item["text"])
 	}
 }
+
+func TestProxyE2E_SSETransport_SSE(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	// Start mock MCP server with SSE responses
+	srv := startMockSSEMCPServer(t, true)
+	defer srv.Close()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// Check initialize
+	if results[0]["id"] != "1" {
+		t.Errorf("expected id=1, got %v", results[0]["id"])
+	}
+
+	// Check tools/list
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	if len(tools) != 7 {
+		t.Errorf("expected 7 tools (2 + 5 meta), got %d", len(tools))
+	}
+
+	// Check tool call response
+	result3, _ := results[2]["result"].(map[string]interface{})
+	content, _ := result3["content"].([]interface{})
+	if len(content) == 0 {
+		t.Fatal("expected content in tool call response")
+	}
+	item, _ := content[0].(map[string]interface{})
+	if item["text"] != "ok" {
+		t.Errorf("expected text=ok, got %v", item["text"])
+	}
+}
+
+func TestProxyE2E_SSETransport_GovernanceBlocks(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	srv := startMockSSEMCPServer(t, false)
+	defer srv.Close()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
+		"--max-calls", "1",
+	}, input)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 responses, got %d", len(results))
+	}
+
+	// First call succeeds
+	if _, hasError := results[1]["error"]; hasError {
+		t.Error("first tool call should succeed")
+	}
+
+	// Second run: budget should be exhausted
+	input2 := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"10","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"11","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+		`{"jsonrpc":"2.0","id":"12","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello2"}}}`,
+	}, "\n") + "\n"
+
+	results2 := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
+		"--max-calls", "1",
+	}, input2)
+
+	if len(results2) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results2))
+	}
+
+	// Second call should be blocked by budget
+	if _, hasError := results2[2]["error"]; !hasError {
+		t.Error("second tool call should be blocked by budget limit")
+	}
+}
+
+func TestProxyE2E_SSETransport_Receipts(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	srv := startMockSSEMCPServer(t, false)
+	defer srv.Close()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
+		"--enforcement", "advisory",
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// Verify receipts were created
+	ledger, err := receipt.NewLedger(stateDir)
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	records, err := ledger.LoadAll()
+	if err != nil {
+		t.Fatalf("load receipts: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 receipts, got %d", len(records))
+	}
+
+	// First receipt: echo_tool success
+	if records[0].ToolName != "echo_tool" {
+		t.Errorf("receipt 0 tool=%s, want echo_tool", records[0].ToolName)
+	}
+	if records[0].Outcome != "success" {
+		t.Errorf("receipt 0 outcome=%s, want success", records[0].Outcome)
+	}
+
+	// Second receipt: fail_tool error
+	if records[1].ToolName != "fail_tool" {
+		t.Errorf("receipt 1 tool=%s, want fail_tool", records[1].ToolName)
+	}
+	if records[1].Outcome != "error" {
+		t.Errorf("receipt 1 outcome=%s, want error", records[1].Outcome)
+	}
+
+	// Verify hash chain
+	for i := 1; i < len(records); i++ {
+		if records[i].PreviousHash != records[i-1].Hash {
+			t.Errorf("broken hash chain at index %d", i)
+		}
+	}
+}
+
+func TestProxyE2E_SSETransport_CustomHeaders(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	var mu sync.Mutex
+	var receivedAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		receivedAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+
+		body, _ := io.ReadAll(r.Body)
+		var msg struct {
+			ID json.RawMessage `json:"id"`
+		}
+		json.Unmarshal(body, &msg)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"mock","version":"0.1"}}}`, string(msg.ID))
+	}))
+	defer srv.Close()
+
+	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", srv.URL,
+		"--sse-header", "Authorization=Bearer e2e-test-token",
+	}, input)
+
+	if len(results) < 1 {
+		t.Fatalf("expected at least 1 response, got %d", len(results))
+	}
+
+	mu.Lock()
+	auth := receivedAuth
+	mu.Unlock()
+
+	if auth != "Bearer e2e-test-token" {
+		t.Errorf("expected Authorization=Bearer e2e-test-token, got %q", auth)
+	}
+}
+
+func TestProxyE2E_SSETransport_OAuth2(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	// Start a mock OAuth2 token server
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.ParseForm()
+		if r.Form.Get("grant_type") != "client_credentials" {
+			http.Error(w, "bad grant_type", http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("client_id") != "test-client" || r.Form.Get("client_secret") != "test-secret" {
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"oauth2-e2e-tok","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenSrv.Close()
+
+	// Start a mock MCP server that requires OAuth2
+	var mu sync.Mutex
+	var receivedAuth string
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		receivedAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+
+		if r.Header.Get("Authorization") != "Bearer oauth2-e2e-tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":"unauthorized"}`)
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var msg struct {
+			ID json.RawMessage `json:"id"`
+		}
+		json.Unmarshal(body, &msg)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"mock-oauth","version":"0.1"}}}`, string(msg.ID))
+	}))
+	defer mcpSrv.Close()
+
+	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", mcpSrv.URL,
+		"--oauth2-token-url", tokenSrv.URL,
+		"--oauth2-client-id", "test-client",
+		"--oauth2-client-secret", "test-secret",
+	}, input)
+
+	if len(results) < 1 {
+		t.Fatalf("expected at least 1 response, got %d", len(results))
+	}
+
+	// Check that the initialize succeeded (not an error)
+	if _, hasError := results[0]["error"]; hasError {
+		t.Errorf("initialize should succeed with OAuth2, got error: %v", results[0]["error"])
+	}
+
+	mu.Lock()
+	auth := receivedAuth
+	mu.Unlock()
+
+	if auth != "Bearer oauth2-e2e-tok" {
+		t.Errorf("expected Authorization=Bearer oauth2-e2e-tok, got %q", auth)
+	}
+}
+
+func TestProxyE2E_SSETransport_TokenCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	// Start a mock MCP server that requires authentication
+	var mu sync.Mutex
+	var receivedAuth string
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		receivedAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+
+		body, _ := io.ReadAll(r.Body)
+		var msg struct {
+			ID json.RawMessage `json:"id"`
+		}
+		json.Unmarshal(body, &msg)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"mock","version":"0.1"}}}`, string(msg.ID))
+	}))
+	defer mcpSrv.Close()
+
+	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--state-dir", stateDir,
+		"--transport", "sse",
+		"--upstream-url", mcpSrv.URL,
+		"--token-command", "echo",
+		"--token-command-arg", "cmd-token-456",
+	}, input)
+
+	if len(results) < 1 {
+		t.Fatalf("expected at least 1 response, got %d", len(results))
+	}
+
+	if _, hasError := results[0]["error"]; hasError {
+		t.Errorf("initialize should succeed, got error: %v", results[0]["error"])
+	}
+
+	mu.Lock()
+	auth := receivedAuth
+	mu.Unlock()
+
+	if auth != "Bearer cmd-token-456" {
+		t.Errorf("expected Authorization=Bearer cmd-token-456, got %q", auth)
+	}
+}
+
+func TestProxyE2E_AutoDiscoveryLogin(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+
+	// Mock server: discovery + registration + authorize + token + MCP
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/mcp" && r.Header.Get("Authorization") == "":
+			w.Header().Set("WWW-Authenticate", `Bearer realm="test"`)
+			w.WriteHeader(http.StatusUnauthorized)
+
+		case r.URL.Path == "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{
+				"authorization_endpoint":"%s/authorize",
+				"token_endpoint":"%s/token",
+				"registration_endpoint":"%s/register"
+			}`, srvURL, srvURL, srvURL)
+
+		case r.URL.Path == "/register":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"client_id":"e2e-disc-client"}`)
+
+		case r.URL.Path == "/authorize":
+			redirectURI := r.URL.Query().Get("redirect_uri")
+			state := r.URL.Query().Get("state")
+			http.Redirect(w, r, fmt.Sprintf("%s?code=e2e-code&state=%s", redirectURI, state), http.StatusFound)
+
+		case r.URL.Path == "/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"e2e-disc-tok","refresh_token":"e2e-ref","token_type":"Bearer","expires_in":3600}`)
+
+		case r.URL.Path == "/v1/mcp":
+			body, _ := io.ReadAll(r.Body)
+			var msg struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			json.Unmarshal(body, &msg)
+			id := string(msg.ID)
+
+			switch msg.Method {
+			case "initialize":
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"disc-mock","version":"0.1"}}}`, id)
+			case "tools/list":
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"test_tool","description":"t","inputSchema":{"type":"object","properties":{}}}]}}`, id)
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, id)
+			}
+
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	srvURL = srv.URL
+	defer srv.Close()
+
+	// Step 1: Create minimal profile (no auth config)
+	profilePath := filepath.Join(dir, "disc-profile.json")
+	profileContent := fmt.Sprintf(`{
+		"name": "disc-test",
+		"upstream": {"transport": "sse", "url": "%s/v1/mcp"},
+		"stateDir": %q
+	}`, srvURL, stateDir)
+	os.WriteFile(profilePath, []byte(profileContent), 0644)
+
+	// Step 2: Run --login (auto-discovery)
+	loginCmd := exec.Command(binary, "--login", profilePath)
+	loginOut, err := loginCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--login failed: %v\n%s", err, loginOut)
+	}
+
+	if !strings.Contains(string(loginOut), "Login successful") {
+		t.Fatalf("expected 'Login successful' in output: %s", loginOut)
+	}
+
+	// Step 3: Verify tokens exist
+	tokensData, err := os.ReadFile(filepath.Join(stateDir, "tokens.json"))
+	if err != nil {
+		t.Fatalf("tokens.json not found: %v", err)
+	}
+	if !strings.Contains(string(tokensData), "e2e-disc-tok") {
+		t.Errorf("unexpected tokens: %s", tokensData)
+	}
+
+	// Step 4: Run proxy with stored tokens
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--profile", profilePath,
+	}, input)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 responses, got %d", len(results))
+	}
+
+	// Verify initialize succeeded
+	if results[0]["id"] != "1" {
+		t.Errorf("expected id=1, got %v", results[0]["id"])
+	}
+
+	// Verify tools/list has meta-tools
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	if len(tools) != 6 { // 1 server tool + 5 meta-tools
+		t.Errorf("expected 6 tools (1 + 5 meta), got %d", len(tools))
+	}
+}
+
+func TestProxyE2E_ProfileBased(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+	serverPath := writeMockServer(t, dir)
+
+	// Create a profile file
+	profilePath := filepath.Join(dir, "test-profile.json")
+	profileContent := fmt.Sprintf(`{
+		"name": "test-profile",
+		"upstream": {
+			"transport": "stdio",
+			"command": "sh",
+			"args": [%q]
+		},
+		"governance": {
+			"enforcement": "advisory"
+		},
+		"stateDir": %q
+	}`, serverPath, filepath.Join(dir, "state"))
+	os.WriteFile(profilePath, []byte(profileContent), 0644)
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
+	}, "\n") + "\n"
+
+	// No trailing "-- command" needed when using profile
+	results := runGuardian(t, binary, []string{
+		"--profile", profilePath,
+	}, input)
+
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 responses, got %d", len(results))
+	}
+
+	// Check initialize
+	if results[0]["id"] != "1" {
+		t.Errorf("expected id=1, got %v", results[0]["id"])
+	}
+
+	// Check tools/list has meta-tools
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	if len(tools) != 7 {
+		t.Errorf("expected 7 tools (2 + 5 meta), got %d", len(tools))
+	}
+
+	// Check tool call
+	result3, _ := results[2]["result"].(map[string]interface{})
+	content, _ := result3["content"].([]interface{})
+	if len(content) == 0 {
+		t.Fatal("expected content in tool call response")
+	}
+	item, _ := content[0].(map[string]interface{})
+	if item["text"] != "ok" {
+		t.Errorf("expected text=ok, got %v", item["text"])
+	}
+}
+
+func TestProxyE2E_ProfileSSE(t *testing.T) {
+	binary := buildBinary(t)
+	dir := t.TempDir()
+
+	srv := startMockSSEMCPServer(t, false)
+	defer srv.Close()
+
+	profilePath := filepath.Join(dir, "sse-profile.json")
+	profileContent := fmt.Sprintf(`{
+		"name": "sse-profile",
+		"upstream": {
+			"transport": "sse",
+			"url": %q
+		},
+		"governance": { "enforcement": "strict" },
+		"stateDir": %q
+	}`, srv.URL, filepath.Join(dir, "state"))
+	os.WriteFile(profilePath, []byte(profileContent), 0644)
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
+	}, "\n") + "\n"
+
+	results := runGuardian(t, binary, []string{
+		"--profile", profilePath,
+	}, input)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 responses, got %d", len(results))
+	}
+
+	if results[0]["id"] != "1" {
+		t.Errorf("expected id=1, got %v", results[0]["id"])
+	}
+
+	result2, _ := results[1]["result"].(map[string]interface{})
+	tools, _ := result2["tools"].([]interface{})
+	if len(tools) != 7 {
+		t.Errorf("expected 7 tools (2 + 5 meta), got %d", len(tools))
+	}
+}
+
+func TestProxyE2E_ProfilesList(t *testing.T) {
+	binary := buildBinary(t)
+
+	// Create temp profile dir
+	dir := t.TempDir()
+	profilesDir := filepath.Join(dir, ".config", "mcp-guardian", "profiles")
+	os.MkdirAll(profilesDir, 0755)
+	os.WriteFile(filepath.Join(profilesDir, "alpha.json"), []byte(`{"name":"alpha"}`), 0644)
+	os.WriteFile(filepath.Join(profilesDir, "beta.json"), []byte(`{"name":"beta"}`), 0644)
+
+	// Run with --profiles using HOME override
+	cmd := exec.Command(binary, "--profiles")
+	cmd.Env = append(os.Environ(), "HOME="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--profiles failed: %v\n%s", err, out)
+	}
+
+	output := string(out)
+	if !strings.Contains(output, "alpha") || !strings.Contains(output, "beta") {
+		t.Errorf("expected alpha and beta in output, got: %s", output)
+	}
+}
+

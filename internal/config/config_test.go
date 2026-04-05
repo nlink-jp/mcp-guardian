@@ -18,6 +18,10 @@ func TestValidate(t *testing.T) {
 		{"advisory enforcement", func(c *Config) { c.Upstream = "cmd"; c.Enforcement = "advisory" }, false},
 		{"schema off", func(c *Config) { c.Upstream = "cmd"; c.SchemaMode = "off" }, false},
 		{"schema strict", func(c *Config) { c.Upstream = "cmd"; c.SchemaMode = "strict" }, false},
+		{"sse transport valid", func(c *Config) { c.Transport = "sse"; c.UpstreamURL = "http://localhost:8080/mcp" }, false},
+		{"sse transport no url", func(c *Config) { c.Transport = "sse" }, true},
+		{"bad transport", func(c *Config) { c.Transport = "websocket" }, true},
+		{"stdio transport explicit", func(c *Config) { c.Transport = "stdio"; c.Upstream = "cmd" }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
