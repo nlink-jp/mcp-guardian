@@ -266,4 +266,15 @@ MIT License. Copyright (c) 2026 magifd2
 
 ## Acknowledgments
 
-This project is inspired by and pays respect to [@sovereign-labs/mcp-proxy](https://github.com/Born14/mcp-proxy) by Born14. The original Node.js implementation established the governance proxy concept for MCP servers. This Go reimplementation aims to provide the same capabilities with enhanced supply chain security through a zero-dependency single binary.
+This project owes its core design to [@sovereign-labs/mcp-proxy](https://github.com/Born14/mcp-proxy) by [Born14](https://github.com/Born14).
+
+The original Node.js/TypeScript implementation pioneered the idea of a **transparent governance proxy for MCP servers** -- inserting an auditing layer between AI agents and tool servers without either side knowing. The key concepts we adopted from that work include:
+
+- **Hash-chained receipt ledger** -- treating every tool call as an immutable, tamper-evident record (like git commits for agent actions)
+- **Failure-based constraint learning** -- fingerprinting failed calls and automatically blocking identical retries within a TTL window
+- **Authority tracking with epochs** -- a monotonic counter proving which controller was active during each call
+- **Pure-function governance gates** -- separating governance math from I/O so invariants can be verified in isolation
+
+`mcp-guardian` is a ground-up reimplementation in Go, not a fork or a port, but the architectural blueprint and the insight that MCP tool calls need governance -- not just logging -- came directly from Born14's work. We chose Go and zero external dependencies to address supply chain security concerns in security-sensitive environments, but the "what to build" was already answered by `@sovereign-labs/mcp-proxy`.
+
+If you find `mcp-guardian` useful, please also star the [original project](https://github.com/Born14/mcp-proxy) that made it possible.
