@@ -20,15 +20,21 @@ MCP tool servers give AI agents powerful capabilities. Without oversight, agents
 
 - Single static binary (~6MB), no runtime dependencies
 - Go standard library only -- zero external modules
-- stdio MITM proxy (transparent to both client and server)
+- **Dual transport**: stdio (default) and HTTP/SSE (Streamable HTTP)
+- **MCP Authorization Discovery**: auto-discovers OAuth2 endpoints and registers clients dynamically -- no manual OAuth app setup required
+- **OAuth2 authentication**: client_credentials and authorization_code (browser login) with automatic token refresh
+- **Browser login**: `--login` auto-discovers OAuth2, registers a client, opens browser, stores tokens
+- **External token command**: integrate with `gcloud`, `vault`, or any CLI tool
+- **401 auto-retry**: transparent token refresh on authentication failure
 - Hash-chained receipt ledger (JSONL, verifiable)
+- **Receipt auto-purge**: configurable retention period, OTLP/Splunk for long-term storage
 - 5-gate governance pipeline
 - 5 injected meta-tools for agent self-governance
 - Post-session analysis CLI (view, verify, explain)
 - Webhook notifications (generic, Discord, Telegram)
-- OTLP/HTTP export (Logs + Traces, batched, zero-dependency)
-- Tool masking with glob patterns (`--mask`, `--server-config`)
-- Two-tier configuration (global system config + per-server config)
+- **Pluggable telemetry**: OTLP/HTTP and Splunk HEC drivers (run in parallel)
+- Tool masking with glob patterns (`--mask`, `--profile`)
+- Two-tier configuration (system global config + server profiles)
 - `.mcp.json` wrap/unwrap for easy integration
 
 ## Install
@@ -45,13 +51,60 @@ make install PREFIX=$HOME/.local
 
 ## Quick Start
 
-### Proxy mode
+### Using server profiles (recommended)
+
+Create a profile at `~/.config/mcp-guardian/profiles/filesystem.json`:
+
+```json
+{
+  "name": "filesystem",
+  "upstream": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "governance": { "enforcement": "advisory" }
+}
+```
+
+```bash
+mcp-guardian --profile filesystem
+```
+
+SSE server with OAuth2 (auto-discovery):
+
+```json
+{
+  "name": "atlassian",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.atlassian.com/v1/mcp"
+  }
+}
+```
+
+No OAuth2 configuration needed -- `--login` auto-discovers endpoints and registers a client:
+
+```bash
+# First time: discovers OAuth2, registers client, opens browser
+mcp-guardian --login atlassian
+
+# Subsequent runs: tokens auto-refresh
+mcp-guardian --profile atlassian
+
+# Add to Claude Code
+claude mcp add atlassian -- mcp-guardian --profile atlassian
+```
+
+### Inline mode (no profile)
 
 ```bash
 mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
 # With options
 mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# SSE transport
+mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
 ### Wrap an existing MCP server
@@ -82,8 +135,14 @@ mcp-guardian --receipts
 ## CLI Reference
 
 ```
-# Proxy mode
+# Proxy mode (profile)
+mcp-guardian --profile <name|path>
+
+# Proxy mode (inline stdio)
 mcp-guardian [options] -- command [args...]
+
+# Proxy mode (inline SSE)
+mcp-guardian --transport sse --upstream-url <url> [options]
 
 # Core options
 --enforcement strict|advisory   Enforcement mode (default: strict)
@@ -92,9 +151,26 @@ mcp-guardian [options] -- command [args...]
 --timeout ms                    Upstream timeout (default: 300000)
 --state-dir dir                 State directory (default: .governance)
 
+# Transport
+--transport stdio|sse           Upstream transport (default: stdio)
+--upstream-url <url>            MCP server URL (required for sse)
+--sse-header KEY=VALUE          SSE HTTP header (repeatable)
+
+# Authentication (sse transport)
+--oauth2-token-url <url>        OAuth2 token endpoint
+--oauth2-client-id <id>         OAuth2 client ID
+--oauth2-client-secret <secret> OAuth2 client secret
+--oauth2-scope <scope>          OAuth2 scope (repeatable)
+--token-command <cmd>           External token command
+--token-command-arg <arg>       Token command argument (repeatable)
+
+# Server profiles
+--profile <name|path>           Server profile (name from ~/.config/mcp-guardian/profiles/ or path)
+--profiles                      List available server profiles
+--login <name|path>             Browser login for OAuth2 authorization_code flow
+
 # Configuration files
---config <path>                 Global config file (OTLP, webhooks, defaults)
---server-config <path>          Per-server config file (mask, enforcement, etc.)
+--config <path>                 Global config file (telemetry, defaults)
 
 # Tool masking
 --mask <pattern>                Mask tool by glob pattern (repeatable)
@@ -159,29 +235,43 @@ mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
 # Via patterns file
 mcp-guardian --mask-file masks.txt -- npx server
 
-# Via server config file
-mcp-guardian --server-config server.json -- npx server
+# Via profile
+mcp-guardian --profile my-server
 ```
 
 Patterns use glob syntax (`*` matches any characters, `?` matches one character). In `advisory` mode, masked tools are logged but not hidden.
 
-## Configuration Files
+## Configuration
 
-Two-tier configuration separates global settings from per-server policies:
+Two-tier configuration separates system-wide telemetry from per-server policies:
 
-### Global config (`--config`)
+```
+~/.config/mcp-guardian/
+  config.json              # System global (telemetry + org defaults)
+  profiles/
+    github-mcp.json        # Server profile
+    filesystem.json
+```
+
+See the [examples/](examples/) directory for ready-to-use templates.
+
+### System global config
+
+Auto-discovered from `~/.config/mcp-guardian/config.json`, or specified with `--config`.
 
 Shared across all MCP server instances. Ideal for MDM/EMM deployment.
 
 ```json
 {
-  "otlp": {
-    "endpoint": "http://otel-collector:4318",
-    "headers": { "Authorization": "Bearer org-token" },
-    "batchSize": 10,
-    "batchTimeout": 5000
+  "telemetry": {
+    "otlp": {
+      "endpoint": "http://otel-collector:4318",
+      "headers": { "Authorization": "Bearer org-token" },
+      "batchSize": 10,
+      "batchTimeout": 5000
+    },
+    "webhooks": ["https://hooks.slack.com/..."]
   },
-  "webhooks": ["https://hooks.slack.com/..."],
   "defaults": {
     "enforcement": "strict",
     "schema": "warn"
@@ -189,42 +279,135 @@ Shared across all MCP server instances. Ideal for MDM/EMM deployment.
 }
 ```
 
-### Server config (`--server-config`)
+The legacy format (top-level `otlp`/`webhooks`) is still supported for backward compatibility.
 
-Per-MCP-server policy. Overrides global defaults.
+### Server profiles (`--profile`)
+
+Per-MCP-server configuration. Stored in `~/.config/mcp-guardian/profiles/` or referenced by path.
+
+SSE server with auto-discovery (minimal):
 
 ```json
 {
-  "enforcement": "advisory",
-  "mask": ["write_*", "execute_*"],
-  "maxCalls": 50,
-  "schema": "strict"
+  "name": "atlassian",
+  "upstream": { "transport": "sse", "url": "https://mcp.atlassian.com/v1/mcp" }
+}
+```
+
+stdio server:
+
+```json
+{
+  "name": "my-server",
+  "upstream": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "governance": {
+    "enforcement": "advisory",
+    "schema": "strict",
+    "maxCalls": 50
+  },
+  "mask": ["write_*", "execute_*"]
+}
+```
+
+SSE with OAuth2 client_credentials (M2M):
+
+```json
+{
+  "name": "api-server",
+  "upstream": { "transport": "sse", "url": "http://mcp.example.com/mcp" },
+  "auth": {
+    "oauth2": {
+      "tokenUrl": "https://auth.example.com/oauth2/token",
+      "clientId": "my-client",
+      "clientSecret": "my-secret",
+      "scopes": ["mcp:read", "mcp:write"]
+    }
+  },
+  "governance": { "enforcement": "strict" }
+}
+```
+
+SSE with OAuth2 authorization_code (explicit config -- usually not needed, `--login` auto-discovers):
+
+```json
+{
+  "name": "github-mcp",
+  "upstream": { "transport": "sse", "url": "https://mcp.github.com/sse" },
+  "auth": {
+    "oauth2": {
+      "flow": "authorization_code",
+      "authorizeUrl": "https://github.com/login/oauth/authorize",
+      "tokenUrl": "https://github.com/login/oauth/access_token",
+      "clientId": "my-app",
+      "scopes": ["repo"]
+    }
+  }
+}
+```
+
+External token command:
+
+```json
+{
+  "name": "gcp-server",
+  "upstream": {
+    "transport": "sse",
+    "url": "http://mcp.example.com/mcp"
+  },
+  "auth": {
+    "tokenCommand": {
+      "command": "gcloud",
+      "args": ["auth", "print-access-token"]
+    }
+  }
 }
 ```
 
 ### Priority order
 
 ```
-Defaults → --config (global) → --server-config (per-server) → CLI flags
+Defaults → Global config (auto-discovered or --config) → Profile (--profile) → CLI flags
 ```
 
-CLI flags always win. Sensitive values (e.g., OTLP auth tokens) in config files avoid exposure via `ps`.
+CLI flags always win. Sensitive values (e.g., OAuth2 secrets) in profiles avoid exposure via `ps`.
 
-## OTLP Telemetry Export
+## MCP Client Integration (.mcp.json)
 
-Export audit data to any OpenTelemetry-compatible backend (Datadog, Grafana, Splunk, etc.) via OTLP/HTTP with JSON encoding. Zero external dependencies -- implemented with Go standard library only.
+From the MCP client's perspective, mcp-guardian is always a stdio process -- regardless of whether the upstream MCP server uses stdio or SSE. Profiles encapsulate all transport and auth complexity.
 
-```bash
-mcp-guardian \
-  --otlp-endpoint http://otel-collector:4318 \
-  --otlp-header "Authorization=Bearer token" \
-  -- npx server
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-guardian",
+      "args": ["--profile", "filesystem"]
+    },
+    "github": {
+      "command": "mcp-guardian",
+      "args": ["--profile", "github-mcp"]
+    }
+  }
+}
 ```
 
-- **Logs**: Each tool call receipt becomes a structured log record
-- **Traces**: Each tool call becomes a span with duration, status, and attributes
-- **Batched**: Records are buffered and flushed by size, timer, or on shutdown
-- **Local receipts are authoritative**: OTLP export is secondary; failures log to stderr without blocking MCP traffic
+For SSE servers requiring authentication, run `mcp-guardian --login <profile>` once. OAuth2 endpoints and client registration are handled automatically.
+
+## Telemetry Export
+
+Pluggable telemetry with two built-in drivers that can run in parallel. Zero external dependencies.
+
+| Driver | Use case | Config key |
+|--------|----------|------------|
+| **OTLP/HTTP** | CloudWatch, GCP, Grafana Cloud, Datadog, etc. | `telemetry.otlp` |
+| **Splunk HEC** | Splunk Enterprise / Cloud (direct, no collector) | `telemetry.splunk` |
+
+Both drivers can run simultaneously. Local receipts auto-purge after `maxReceiptAgeDays` (default: 7) -- telemetry backends are the durable store.
+
+For setup guides (AWS, GCP, Grafana Cloud, Datadog, Splunk, self-hosted), see [docs/otlp-setup.md](docs/otlp-setup.md).
 
 ## Architecture
 
@@ -232,9 +415,13 @@ mcp-guardian \
 Agent (Claude, GPT, etc.)
   | stdin/stdout (JSON-RPC 2.0)
 mcp-guardian
-  | stdin/stdout (JSON-RPC 2.0)
+  | Transport interface
+  +-- stdio: stdin/stdout pipe to child process (default)
+  +-- sse:   HTTP POST + SSE stream to remote server
 Upstream MCP Server
 ```
+
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 
 ### State directory (.governance/)
 

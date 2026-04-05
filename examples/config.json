@@ -1,0 +1,26 @@
+{
+  "telemetry": {
+    "otlp": {
+      "endpoint": "http://otel-collector:4318",
+      "headers": {
+        "Authorization": "Bearer <your-org-token>"
+      },
+      "batchSize": 10,
+      "batchTimeout": 5000
+    },
+    "splunk": {
+      "endpoint": "https://splunk-hec.example.com:8088/services/collector/event",
+      "token": "<your-hec-token>",
+      "index": "mcp-audit"
+    },
+    "webhooks": [
+      "https://hooks.slack.com/services/<your-webhook-url>"
+    ]
+  },
+  "defaults": {
+    "enforcement": "strict",
+    "schema": "warn",
+    "timeout": 300000,
+    "maxReceiptAgeDays": 7
+  }
+}

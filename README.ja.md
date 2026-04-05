@@ -20,14 +20,20 @@ MCP ツールサーバーは AI エージェントに強力な機能を与えま
 
 - 単一静的バイナリ（約6MB）、ランタイム依存なし
 - Go 標準ライブラリのみ -- 外部モジュールゼロ
-- stdio MITM プロキシ（クライアント・サーバー双方に透過的）
+- **デュアルトランスポート**: stdio（デフォルト）および HTTP/SSE（Streamable HTTP）
+- **MCP Authorization Discovery**: OAuth2 エンドポイント自動発見 + クライアント自動登録 — 手動 OAuth アプリ設定不要
+- **OAuth2 認証**: client_credentials および authorization_code（ブラウザログイン）、自動リフレッシュ
+- **ブラウザログイン**: `--login` で OAuth2 自動発見 → クライアント登録 → ブラウザ認証 → トークン保存
+- **外部トークンコマンド**: `gcloud`, `vault` 等の既存 CLI ツールと統合
+- **401 自動リトライ**: 認証失敗時の透過的トークンリフレッシュ
 - ハッシュチェーンレシート台帳（JSONL、検証可能）
+- **レシート自動パージ**: 設定可能な保持期間、長期保存は OTLP/Splunk
 - 5段階ガバナンスパイプライン
 - エージェント自己統治用の5つのメタツール注入
 - セッション事後分析 CLI（view, verify, explain）
 - Webhook 通知（汎用、Discord、Telegram）
 - OTLP/HTTP エクスポート（Logs + Traces、バッチ送信、外部依存ゼロ）
-- glob パターンによるツールマスキング（`--mask`, `--server-config`）
+- glob パターンによるツールマスキング（`--mask`, `--profile`）
 - 2段階設定（グローバルシステム設定 + サーバー固有設定）
 - `.mcp.json` の wrap/unwrap による簡単統合
 
@@ -45,13 +51,60 @@ make install PREFIX=$HOME/.local
 
 ## クイックスタート
 
-### プロキシモード
+### サーバープロファイル（推奨）
+
+`~/.config/mcp-guardian/profiles/filesystem.json` を作成:
+
+```json
+{
+  "name": "filesystem",
+  "upstream": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "governance": { "enforcement": "advisory" }
+}
+```
+
+```bash
+mcp-guardian --profile filesystem
+```
+
+OAuth2 認証付き SSE サーバー（自動発見）:
+
+```json
+{
+  "name": "atlassian",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.atlassian.com/v1/mcp"
+  }
+}
+```
+
+OAuth2 設定不要 — `--login` が自動でエンドポイント発見 + クライアント登録:
+
+```bash
+# 初回: OAuth2 自動発見 → クライアント登録 → ブラウザ認証
+mcp-guardian --login atlassian
+
+# 以降: トークン自動更新
+mcp-guardian --profile atlassian
+
+# Claude Code に追加
+claude mcp add atlassian -- mcp-guardian --profile atlassian
+```
+
+### インラインモード（プロファイルなし）
 
 ```bash
 mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
 # オプション付き
 mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# SSE トランスポート
+mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
 ### 既存 MCP サーバーのラップ
@@ -82,8 +135,14 @@ mcp-guardian --receipts
 ## CLI リファレンス
 
 ```
-# プロキシモード
+# プロキシモード（プロファイル）
+mcp-guardian --profile <name|path>
+
+# プロキシモード（インライン stdio）
 mcp-guardian [options] -- command [args...]
+
+# プロキシモード（インライン SSE）
+mcp-guardian --transport sse --upstream-url <url> [options]
 
 # 基本オプション
 --enforcement strict|advisory   実行モード（デフォルト: strict）
@@ -92,9 +151,26 @@ mcp-guardian [options] -- command [args...]
 --timeout ms                    上流タイムアウト（デフォルト: 300000）
 --state-dir dir                 状態ディレクトリ（デフォルト: .governance）
 
+# トランスポート
+--transport stdio|sse           上流トランスポート（デフォルト: stdio）
+--upstream-url <url>            MCP サーバー URL（sse で必須）
+--sse-header KEY=VALUE          SSE HTTP ヘッダ（複数指定可）
+
+# 認証（sse トランスポート）
+--oauth2-token-url <url>        OAuth2 トークンエンドポイント
+--oauth2-client-id <id>         OAuth2 クライアント ID
+--oauth2-client-secret <secret> OAuth2 クライアントシークレット
+--oauth2-scope <scope>          OAuth2 スコープ（複数指定可）
+--token-command <cmd>           外部トークンコマンド
+--token-command-arg <arg>       トークンコマンド引数（複数指定可）
+
+# サーバープロファイル
+--profile <name|path>           サーバープロファイル（名前 or パス）
+--profiles                      利用可能なプロファイル一覧
+--login <name|path>             OAuth2 ブラウザログイン（authorization_code フロー）
+
 # 設定ファイル
 --config <path>                 グローバル設定ファイル（OTLP、webhook、デフォルト値）
---server-config <path>          サーバー固有設定ファイル（mask、enforcement等）
 
 # ツールマスキング
 --mask <pattern>                glob パターンでツールをマスク（複数指定可）
@@ -160,28 +236,42 @@ mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
 mcp-guardian --mask-file masks.txt -- npx server
 
 # サーバー設定ファイルで指定
-mcp-guardian --server-config server.json -- npx server
+mcp-guardian --profile my-server
 ```
 
 パターンは glob 構文を使用（`*` は任意の文字列、`?` は1文字にマッチ）。`advisory` モードではマスクせずログのみ記録。
 
-## 設定ファイル
+## 設定
 
-2段階の設定でグローバル設定とサーバー固有ポリシーを分離:
+2層の設定でシステムテレメトリとサーバー固有ポリシーを分離:
 
-### グローバル設定 (`--config`)
+```
+~/.config/mcp-guardian/
+  config.json              # システムグローバル（テレメトリ + 組織デフォルト）
+  profiles/
+    github-mcp.json        # サーバープロファイル
+    filesystem.json
+```
+
+すぐに使えるテンプレートは [examples/](examples/) を参照。
+
+### システムグローバル設定
+
+`~/.config/mcp-guardian/config.json` から自動検出。`--config` で明示指定も可。
 
 全 MCP サーバーインスタンスで共有。MDM/EMM 配布に最適。
 
 ```json
 {
-  "otlp": {
-    "endpoint": "http://otel-collector:4318",
-    "headers": { "Authorization": "Bearer org-token" },
-    "batchSize": 10,
-    "batchTimeout": 5000
+  "telemetry": {
+    "otlp": {
+      "endpoint": "http://otel-collector:4318",
+      "headers": { "Authorization": "Bearer org-token" },
+      "batchSize": 10,
+      "batchTimeout": 5000
+    },
+    "webhooks": ["https://hooks.slack.com/..."]
   },
-  "webhooks": ["https://hooks.slack.com/..."],
   "defaults": {
     "enforcement": "strict",
     "schema": "warn"
@@ -189,26 +279,66 @@ mcp-guardian --server-config server.json -- npx server
 }
 ```
 
-### サーバー固有設定 (`--server-config`)
+レガシーフォーマット（トップレベル `otlp`/`webhooks`）も後方互換のためサポート。
 
-MCP サーバーごとのポリシー。グローバルデフォルトを上書き。
+### サーバープロファイル (`--profile`)
+
+MCP サーバーごとの設定。`~/.config/mcp-guardian/profiles/` に配置、またはパスで指定。
 
 ```json
 {
-  "enforcement": "advisory",
-  "mask": ["write_*", "execute_*"],
-  "maxCalls": 50,
-  "schema": "strict"
+  "name": "my-server",
+  "upstream": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "governance": {
+    "enforcement": "advisory",
+    "schema": "strict",
+    "maxCalls": 50
+  },
+  "mask": ["write_*", "execute_*"]
+}
+```
+
+OAuth2 認証付き SSE:
+
+```json
+{
+  "name": "github-mcp",
+  "upstream": { "transport": "sse", "url": "http://mcp.example.com/mcp" },
+  "auth": {
+    "oauth2": {
+      "tokenUrl": "https://auth.example.com/oauth2/token",
+      "clientId": "my-client",
+      "clientSecret": "my-secret",
+      "scopes": ["mcp:read", "mcp:write"]
+    }
+  },
+  "governance": { "enforcement": "strict" }
+}
+```
+
+外部トークンコマンド:
+
+```json
+{
+  "name": "gcp-server",
+  "upstream": { "transport": "sse", "url": "http://mcp.example.com/mcp" },
+  "auth": {
+    "tokenCommand": { "command": "gcloud", "args": ["auth", "print-access-token"] }
+  }
 }
 ```
 
 ### 優先順位
 
 ```
-デフォルト → --config（グローバル） → --server-config（サーバー固有） → CLI フラグ
+デフォルト → グローバル設定（自動検出 or --config） → プロファイル（--profile） → CLI フラグ
 ```
 
-CLI フラグが常に最優先。設定ファイル内の機密値（OTLP 認証トークン等）は `ps` で露出しません。
+CLI フラグが常に最優先。プロファイル内の機密値（OAuth2 シークレット等）は `ps` で露出しません。
 
 ## OTLP テレメトリエクスポート
 
@@ -224,7 +354,14 @@ mcp-guardian \
 - **Logs**: 各ツールコールレシートが構造化ログレコードに変換
 - **Traces**: 各ツールコールが期間・ステータス・属性付きスパンに変換
 - **バッチ送信**: サイズ、タイマー、またはシャットダウン時にフラッシュ
-- **ローカルレシートが正本**: OTLP エクスポートはセカンダリ。障害時は stderr にログのみ、MCP 通信をブロックしない
+| ドライバ | 用途 | 設定キー |
+|---------|------|---------|
+| **OTLP/HTTP** | CloudWatch, GCP, Grafana Cloud, Datadog 等 | `telemetry.otlp` |
+| **Splunk HEC** | Splunk Enterprise / Cloud（直接送信、Collector 不要） | `telemetry.splunk` |
+
+両ドライバは並列動作可能。ローカルレシートは `maxReceiptAgeDays`（デフォルト: 7日）で自動パージ — テレメトリが永続保存先。
+
+AWS、GCP、Grafana Cloud、Datadog、Splunk、セルフホスト構成の詳細は [docs/otlp-setup.md](docs/otlp-setup.md) を参照。
 
 ## アーキテクチャ
 
@@ -232,9 +369,13 @@ mcp-guardian \
 エージェント (Claude, GPT, etc.)
   | stdin/stdout (JSON-RPC 2.0)
 mcp-guardian
-  | stdin/stdout (JSON-RPC 2.0)
+  | Transport インターフェース
+  +-- stdio: 子プロセスへの stdin/stdout パイプ（デフォルト）
+  +-- sse:   リモートサーバーへの HTTP POST + SSE ストリーム
 上流 MCP サーバー
 ```
+
+詳細なアーキテクチャドキュメントは [docs/architecture.md](docs/architecture.md) を参照。
 
 ### 状態ディレクトリ (.governance/)
 

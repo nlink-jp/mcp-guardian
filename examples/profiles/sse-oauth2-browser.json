@@ -1,0 +1,21 @@
+{
+  "name": "sse-oauth2-browser",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.example.com/sse"
+  },
+  "auth": {
+    "oauth2": {
+      "flow": "authorization_code",
+      "authorizeUrl": "https://auth.example.com/authorize",
+      "tokenUrl": "https://auth.example.com/oauth2/token",
+      "clientId": "<your-client-id>",
+      "scopes": ["openid", "mcp:read", "mcp:write"]
+    }
+  },
+  "governance": {
+    "enforcement": "strict",
+    "maxCalls": 100
+  },
+  "stateDir": ".governance/sse-browser"
+}

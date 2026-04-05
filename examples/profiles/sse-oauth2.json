@@ -1,0 +1,26 @@
+{
+  "name": "sse-oauth2",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.example.com/sse",
+    "headers": {
+      "X-Custom-Header": "value"
+    }
+  },
+  "auth": {
+    "oauth2": {
+      "tokenUrl": "https://auth.example.com/oauth2/token",
+      "clientId": "<your-client-id>",
+      "clientSecret": "<your-client-secret>",
+      "scopes": ["mcp:read", "mcp:write"]
+    }
+  },
+  "governance": {
+    "enforcement": "strict",
+    "maxCalls": 100
+  },
+  "mask": [
+    "admin_*"
+  ],
+  "stateDir": ".governance/sse-server"
+}

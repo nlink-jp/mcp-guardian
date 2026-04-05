@@ -1,0 +1,10 @@
+{
+  "name": "stdio-basic",
+  "upstream": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "governance": {
+    "enforcement": "advisory"
+  }
+}

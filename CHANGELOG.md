@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.4.0] - 2026-04-05
+
+### Added
+
+- **SSE transport** -- Connect to HTTP/SSE (Streamable HTTP) MCP servers via `--transport sse --upstream-url <url>`, or via server profiles.
+- **Server profiles** -- One JSON file per MCP server (`--profile <name|path>`). Replaces `--server-config`. Stored in `~/.config/mcp-guardian/profiles/`.
+- **MCP Authorization Discovery** -- Auto-discovers OAuth2 endpoints and registers clients dynamically (RFC 8414 + RFC 7591). No manual OAuth app setup required.
+- **OAuth2 authorization_code flow** -- `--login <profile>` opens browser for interactive authentication with PKCE. Tokens stored locally, auto-refreshed via refresh_token.
+- **OAuth2 client_credentials flow** -- Machine-to-machine authentication with automatic token caching and refresh.
+- **External token command** -- `tokenCommand` in profiles to integrate with `gcloud`, `vault`, etc.
+- **401 auto-retry** -- Transparently invalidates and refreshes tokens on HTTP 401 responses.
+- **Splunk HEC driver** -- Built-in Splunk HTTP Event Collector exporter, runs in parallel with OTLP.
+- **Exporter interface** -- Pluggable telemetry backend architecture (`export.Exporter`).
+- **Receipt auto-purge** -- `maxReceiptAgeDays` (default: 7) removes old receipts on startup. Telemetry backends are the durable store.
+- **Tail-read startup** -- Ledger reads only the last line on startup, O(1) regardless of file size.
+- **Global config auto-discovery** -- System config auto-loaded from `~/.config/mcp-guardian/config.json`.
+- **Profile listing** -- `--profiles` lists available profiles.
+- New CLI flags: `--profile`, `--profiles`, `--login`, `--transport`, `--upstream-url`, `--sse-header`, `--oauth2-token-url`, `--oauth2-client-id`, `--oauth2-client-secret`, `--oauth2-scope`, `--token-command`, `--token-command-arg`.
+- New packages: `internal/transport`, `internal/export`.
+- `docs/architecture.md` -- Comprehensive architecture reference.
+- `docs/otlp-setup.md` -- Setup guides for AWS, GCP, Grafana Cloud, Datadog, Splunk HEC, self-hosted.
+- `examples/` -- Config and profile templates (stdio, SSE, OAuth2, Atlassian, auto-discover).
+
+### Changed
+
+- **Breaking: `--server-config` removed** -- Use `--profile` instead. Server profiles use a structured format with `upstream`, `auth`, `governance` blocks.
+- **Global config format** -- Telemetry settings moved under `telemetry` block. Legacy top-level `otlp`/`webhooks` fields removed.
+- Proxy internals refactored: upstream communication via `transport.Transport` interface, telemetry via `export.Exporter` interface.
+- `ServerConfig` type removed from codebase.
+
+### Security
+
+- OAuth callback HTML output escaped with `html.EscapeString` to prevent XSS.
+- OAuth state parameter compared with `crypto/subtle.ConstantTimeCompare`.
+- ExtraParams cannot override security-critical OAuth parameters (state, redirect_uri, code_challenge).
+- Receipt files created with mode `0600` (was `0644`).
+- Receipt writes and purge use `f.Sync()` before close to prevent data loss on crash.
+- All HTTP response bodies limited to 1MB via `io.LimitReader`.
+- `writeToAgent` protected by mutex for concurrent stdout safety.
+- Discovery and Splunk HEC use dedicated `http.Client` with timeouts.
+- `readLastRecord` backward scan capped at 64KB to prevent OOM on corrupted files.
+
 ## [0.3.0] - 2026-04-05
 
 ### Added

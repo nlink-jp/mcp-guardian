@@ -1,0 +1,14 @@
+{
+  "name": "sse-static-token",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.example.com/sse",
+    "headers": {
+      "Authorization": "Bearer <your-api-key>"
+    }
+  },
+  "governance": {
+    "enforcement": "advisory",
+    "schema": "warn"
+  }
+}

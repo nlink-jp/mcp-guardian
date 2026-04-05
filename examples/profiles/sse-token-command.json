@@ -1,0 +1,16 @@
+{
+  "name": "sse-token-command",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.example.com/sse"
+  },
+  "auth": {
+    "tokenCommand": {
+      "command": "gcloud",
+      "args": ["auth", "print-access-token"]
+    }
+  },
+  "governance": {
+    "enforcement": "strict"
+  }
+}
