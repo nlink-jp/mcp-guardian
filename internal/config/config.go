@@ -12,6 +12,11 @@ type Config struct {
 	MaxCalls     int    // 0 = unlimited
 	TimeoutMs    int
 	WebhookURLs  []string
+	MaskPatterns     []string         // tool name glob patterns to mask
+	OTLPEndpoint     string            // OTLP/HTTP base URL (empty = disabled)
+	OTLPHeaders      map[string]string // additional HTTP headers for OTLP
+	OTLPBatchSize    int               // batch size (default: 10)
+	OTLPBatchTimeout int               // batch timeout in ms (default: 5000)
 }
 
 // Defaults returns a Config with default values.
