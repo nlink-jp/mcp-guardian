@@ -1642,6 +1642,7 @@ func TestProxyE2E_AutoDiscoveryLogin(t *testing.T) {
 
 	// Step 2: Run --login (auto-discovery)
 	loginCmd := exec.Command(binary, "--login", profilePath)
+	loginCmd.Env = append(os.Environ(), "MCP_GUARDIAN_NO_BROWSER=1")
 	loginOut, err := loginCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("--login failed: %v\n%s", err, loginOut)

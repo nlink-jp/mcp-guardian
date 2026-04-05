@@ -87,30 +87,47 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Resolve stateDir from --profile if specified and --state-dir was not explicit
+	resolvedStateDir := *stateDir
+	if *profileFlag != "" {
+		profile, err := config.ResolveProfile(*profileFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if profile.StateDir != "" {
+			// Use profile's stateDir unless --state-dir was explicitly set
+			setFlags := flagsExplicitlySet()
+			if !setFlags["state-dir"] {
+				resolvedStateDir = profile.StateDir
+			}
+		}
+	}
+
 	// Analysis commands
 	if *viewCmd {
-		if err := cli.View(*stateDir, *filterTool, *filterOutcome, *viewLimit); err != nil {
+		if err := cli.View(resolvedStateDir, *filterTool, *filterOutcome, *viewLimit); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *verifyCmd {
-		if err := cli.Verify(*stateDir); err != nil {
+		if err := cli.Verify(resolvedStateDir); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *explainCmd {
-		if err := cli.Explain(*stateDir); err != nil {
+		if err := cli.Explain(resolvedStateDir); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *receiptsCmd {
-		if err := cli.Receipts(*stateDir); err != nil {
+		if err := cli.Receipts(resolvedStateDir); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}

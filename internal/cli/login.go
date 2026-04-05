@@ -270,10 +270,14 @@ func generateState() (string, error) {
 
 // openBrowserFunc is the function used to open a URL in the browser.
 // Replaced in tests to prevent actual browser launches.
+// Set MCP_GUARDIAN_NO_BROWSER=1 to suppress browser opening (for CI/testing).
 var openBrowserFunc = openBrowser
 
 // openBrowser opens a URL in the default browser.
 func openBrowser(url string) {
+	if os.Getenv("MCP_GUARDIAN_NO_BROWSER") != "" {
+		return
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
