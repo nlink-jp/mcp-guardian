@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.6.0] - 2026-04-06
+
+### Added
+
+- **`--inspect`** -- Show server info and available tools for a profile. Connects to the MCP server, retrieves capabilities, and displays tool names, descriptions, and parameter schemas.
+
+### Fixed
+
+- Tool masking documentation clarified: requires `enforcement: "strict"` to take effect. In `advisory` mode, masked tools are logged but not hidden.
+
 ## [0.5.1] - 2026-04-05
 
 ### Fixed
