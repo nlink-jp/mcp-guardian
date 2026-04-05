@@ -107,98 +107,45 @@ mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-files
 mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
-### 既存 MCP サーバーのラップ
-
-```bash
-# .mcp.json 内のサーバーをラップ
-mcp-guardian --wrap filesystem
-
-# 元に戻す
-mcp-guardian --unwrap filesystem
-```
-
 ### セッション事後分析
 
 ```bash
-# レシートタイムライン表示
-mcp-guardian --view
-mcp-guardian --view --tool write_file --outcome error
-
-# ハッシュチェーン整合性検証
-mcp-guardian --verify
-
-# セッション要約
-mcp-guardian --explain
-mcp-guardian --receipts
+mcp-guardian --profile atlassian --view
+mcp-guardian --profile atlassian --view --tool write_file --outcome error
+mcp-guardian --profile atlassian --verify
+mcp-guardian --profile atlassian --explain
+mcp-guardian --profile atlassian --receipts
 ```
 
 ## CLI リファレンス
 
 ```
-# プロキシモード（プロファイル）
+# プロキシモード
 mcp-guardian --profile <name|path>
 
-# プロキシモード（インライン stdio）
-mcp-guardian [options] -- command [args...]
-
-# プロキシモード（インライン SSE）
-mcp-guardian --transport sse --upstream-url <url> [options]
-
-# 基本オプション
---enforcement strict|advisory   実行モード（デフォルト: strict）
---schema off|warn|strict        スキーマ検証（デフォルト: warn）
---max-calls N                   バジェット上限（0 = 無制限）
---timeout ms                    上流タイムアウト（デフォルト: 300000）
---state-dir dir                 状態ディレクトリ（デフォルト: .governance）
-
-# トランスポート
---transport stdio|sse           上流トランスポート（デフォルト: stdio）
---upstream-url <url>            MCP サーバー URL（sse で必須）
---sse-header KEY=VALUE          SSE HTTP ヘッダ（複数指定可）
-
-# 認証（sse トランスポート）
---oauth2-token-url <url>        OAuth2 トークンエンドポイント
---oauth2-client-id <id>         OAuth2 クライアント ID
---oauth2-client-secret <secret> OAuth2 クライアントシークレット
---oauth2-scope <scope>          OAuth2 スコープ（複数指定可）
---token-command <cmd>           外部トークンコマンド
---token-command-arg <arg>       トークンコマンド引数（複数指定可）
-
-# サーバープロファイル
+# プロファイル管理
 --profile <name|path>           サーバープロファイル（名前 or パス）
 --profiles                      利用可能なプロファイル一覧
---login <name|path>             OAuth2 ブラウザログイン（authorization_code フロー）
+--login <name|path>             OAuth2 ブラウザログイン（エンドポイント自動発見）
 
-# 設定ファイル
---config <path>                 グローバル設定ファイル（OTLP、webhook、デフォルト値）
+# グローバル設定
+--config <path>                 グローバル設定ファイル（テレメトリ、デフォルト値）
 
-# ツールマスキング
---mask <pattern>                glob パターンでツールをマスク（複数指定可）
---mask-file <path>              マスクパターンファイル（1行1パターン）
-
-# OTLP テレメトリエクスポート
---otlp-endpoint <url>           OTLP/HTTP エンドポイント（空 = 無効）
---otlp-header KEY=VALUE         OTLP HTTP ヘッダ（複数指定可）
---otlp-batch-size N             バッチサイズ（デフォルト: 10）
---otlp-batch-timeout ms         バッチタイムアウト（デフォルト: 5000）
-
-# Webhook
---webhook url                   Webhook URL（複数指定可）
-
-# 分析
+# 分析（--profile または --state-dir が必要）
 --view                          レシートタイムライン
 --verify                        ハッシュチェーン検証
 --explain                       セッション説明
 --receipts                      サマリー
-
-# 統合
---wrap <server>                 .mcp.json にプロキシを挿入
---unwrap <server>               .mcp.json を元に戻す
---mcp-config <path>             .mcp.json のパス（wrap/unwrap 用）
+--state-dir <dir>               状態ディレクトリ上書き
+--tool <name>                   ツール名フィルタ（--view 用）
+--outcome <outcome>             結果フィルタ（--view 用）
+--limit <n>                     レシート数制限（--view 用）
 
 # 情報
 --version                       バージョン表示
 ```
+
+トランスポート、認証、ガバナンス、マスキングの設定は全てサーバープロファイル（JSON）で定義。テンプレートは [examples/profiles/](examples/profiles/) を参照。
 
 ## ガバナンスパイプライン
 
@@ -228,15 +175,12 @@ mcp-guardian --transport sse --upstream-url <url> [options]
 
 エージェントからツールを完全に隠蔽します。マスクされたツールは `tools/list` レスポンスから除外され、呼び出し時は汎用的な "tool not found" エラーを返します。ツールの存在自体をエージェントに知らせないことで、回避行動の試行を防ぎます。
 
-```bash
-# CLI フラグで指定
-mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
+プロファイルで指定:
 
-# パターンファイルで指定
-mcp-guardian --mask-file masks.txt -- npx server
-
-# サーバー設定ファイルで指定
-mcp-guardian --profile my-server
+```json
+{
+  "mask": ["write_*", "delete_*"]
+}
 ```
 
 パターンは glob 構文を使用（`*` は任意の文字列、`?` は1文字にマッチ）。`advisory` モードではマスクせずログのみ記録。

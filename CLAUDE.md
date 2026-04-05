@@ -42,7 +42,7 @@ mcp-guardian/
 │   ├── webhook/               # Fire-and-forget HTTP notifications
 │   ├── otlp/                  # OTLP/HTTP exporter (Logs + Traces)
 │   ├── mask/                  # Tool name glob matching
-│   └── cli/                   # CLI commands (view, verify, explain, wrap, login, discover)
+│   └── cli/                   # CLI commands (view, verify, explain, login, discover)
 ├── Makefile
 └── go.mod                     # github.com/nlink-jp/mcp-guardian (no require)
 ```

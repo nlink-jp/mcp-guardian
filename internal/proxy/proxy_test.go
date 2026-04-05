@@ -126,6 +126,34 @@ func writeMockServer(t *testing.T, dir string) string {
 	return path
 }
 
+// writeTestProfile creates a temporary profile JSON file for E2E tests.
+func writeTestProfile(t *testing.T, dir string, profile map[string]interface{}) string {
+	t.Helper()
+	data, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "test-profile.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeTestConfig creates a temporary global config JSON file for E2E tests.
+func writeTestConfig(t *testing.T, dir string, cfg map[string]interface{}) string {
+	t.Helper()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "test-config.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestProxyE2E_InitializeAndToolsList(t *testing.T) {
 	binary := buildBinary(t)
 	dir := t.TempDir()
@@ -137,11 +165,12 @@ func TestProxyE2E_InitializeAndToolsList(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -199,11 +228,12 @@ func TestProxyE2E_ToolCallAndReceipts(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -265,12 +295,12 @@ func TestProxyE2E_BudgetEnforcement(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"second"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--max-calls", "1",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict", "maxCalls": 1},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -304,11 +334,12 @@ func TestProxyE2E_GovernanceMetaTool(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"governance_status","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -342,11 +373,12 @@ func TestProxyE2E_ConstraintLearningAndBlocking(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input1)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	runGuardian(t, binary, []string{"--profile", profilePath}, input1)
 
 	// Second session: fail_tool on same target should be blocked by constraint
 	input2 := strings.Join([]string{
@@ -355,11 +387,7 @@ func TestProxyE2E_ConstraintLearningAndBlocking(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input2)
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input2)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -398,11 +426,12 @@ func TestProxyE2E_AdvisoryMode(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--", "sh", serverPath,
-	}, input1)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	runGuardian(t, binary, []string{"--profile", profilePath}, input1)
 
 	// Second session: fail_tool again with advisory — constraint exists but should not block
 	input2 := strings.Join([]string{
@@ -411,11 +440,7 @@ func TestProxyE2E_AdvisoryMode(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--", "sh", serverPath,
-	}, input2)
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input2)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -441,12 +466,12 @@ func TestProxyE2E_SchemaValidation(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--schema", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict", "schema": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -480,11 +505,12 @@ func TestProxyE2E_BumpAuthorityAndEpochCheck(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"test"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -528,11 +554,12 @@ func TestProxyE2E_DeclareAndClearIntent(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"5","method":"tools/call","params":{"name":"governance_status","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 5 {
 		t.Fatalf("expected at least 5 responses, got %d", len(results))
@@ -586,11 +613,12 @@ func TestProxyE2E_Notification(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"after-notif"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	// Should get initialize response + echo_tool response (notification has no response)
 	if len(results) < 2 {
@@ -620,11 +648,12 @@ func TestProxyE2E_ConvergenceStatus(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"governance_convergence_status","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -656,12 +685,13 @@ func TestProxyE2E_ToolMaskStrict(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"4","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--mask", "fail_*",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"mask":       []string{"fail_*"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 4 {
 		t.Fatalf("expected at least 4 responses, got %d", len(results))
@@ -753,12 +783,13 @@ func TestProxyE2E_ToolMaskAdvisory(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--mask", "fail_*",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"mask":       []string{"fail_*"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -792,24 +823,20 @@ func TestProxyE2E_ToolMaskFile(t *testing.T) {
 	serverPath := writeMockServer(t, dir)
 	stateDir := filepath.Join(dir, "state")
 
-	// Write mask file
-	maskFile := filepath.Join(dir, "masks.txt")
-	if err := os.WriteFile(maskFile, []byte("# mask fail tools\nfail_*\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
 		`{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}`,
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "strict",
-		"--mask-file", maskFile,
-		"--", "sh", serverPath,
-	}, input)
+	// mask patterns go directly in the profile "mask" array instead of a file
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"mask":       []string{"fail_*"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -821,14 +848,14 @@ func TestProxyE2E_ToolMaskFile(t *testing.T) {
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]interface{})
 		if tm["name"] == "fail_tool" {
-			t.Error("fail_tool should be masked via mask-file")
+			t.Error("fail_tool should be masked via profile mask array")
 		}
 	}
 
 	// tools/call fail_tool should be blocked
 	r3 := results[2]
 	if _, hasError := r3["error"]; !hasError {
-		t.Error("masked tool call via mask-file should return an error")
+		t.Error("masked tool call via profile mask should return an error")
 	}
 }
 
@@ -863,14 +890,21 @@ func TestProxyE2E_OTLPExport(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"4","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--otlp-endpoint", srv.URL,
-		"--otlp-batch-size", "1",
-		"--otlp-header", "X-Test-Auth=secret123",
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	configPath := writeTestConfig(t, dir, map[string]interface{}{
+		"telemetry": map[string]interface{}{
+			"otlp": map[string]interface{}{
+				"endpoint":  srv.URL,
+				"batchSize": 1,
+				"headers":   map[string]interface{}{"X-Test-Auth": "secret123"},
+			},
+		},
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath, "--config", configPath}, input)
 
 	if len(results) < 4 {
 		t.Fatalf("expected at least 4 responses, got %d", len(results))
@@ -957,31 +991,27 @@ func TestProxyE2E_SplunkHECExport(t *testing.T) {
 	}))
 	defer hecSrv.Close()
 
-	// Write global config with Splunk HEC
-	globalCfg := filepath.Join(dir, "config.json")
-	globalContent := fmt.Sprintf(`{
-  "telemetry": {
-    "splunk": {
-      "endpoint": %q,
-      "token": "e2e-hec-token",
-      "index": "mcp-test",
-      "batchSize": 1
-    }
-  }
-}`, hecSrv.URL)
-	os.WriteFile(globalCfg, []byte(globalContent), 0644)
-
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--config", globalCfg,
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	configPath := writeTestConfig(t, dir, map[string]interface{}{
+		"telemetry": map[string]interface{}{
+			"splunk": map[string]interface{}{
+				"endpoint":  hecSrv.URL,
+				"token":     "e2e-hec-token",
+				"index":     "mcp-test",
+				"batchSize": 1,
+			},
+		},
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath, "--config", configPath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -1060,26 +1090,23 @@ func TestProxyE2E_SplunkHECAndOTLP(t *testing.T) {
 	}))
 	defer hecSrv.Close()
 
-	globalCfg := filepath.Join(dir, "config.json")
-	globalContent := fmt.Sprintf(`{
-  "telemetry": {
-    "otlp": { "endpoint": %q, "batchSize": 1 },
-    "splunk": { "endpoint": %q, "token": "tok", "batchSize": 1 }
-  }
-}`, otlpSrv.URL, hecSrv.URL)
-	os.WriteFile(globalCfg, []byte(globalContent), 0644)
-
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--enforcement", "advisory",
-		"--config", globalCfg,
-		"--", "sh", serverPath,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	configPath := writeTestConfig(t, dir, map[string]interface{}{
+		"telemetry": map[string]interface{}{
+			"otlp":   map[string]interface{}{"endpoint": otlpSrv.URL, "batchSize": 1},
+			"splunk": map[string]interface{}{"endpoint": hecSrv.URL, "token": "tok", "batchSize": 1},
+		},
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath, "--config", configPath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -1179,11 +1206,11 @@ func TestProxyE2E_SSETransport_JSON(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream": map[string]interface{}{"transport": "sse", "url": srv.URL},
+		"stateDir": stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -1228,11 +1255,11 @@ func TestProxyE2E_SSETransport_SSE(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream": map[string]interface{}{"transport": "sse", "url": srv.URL},
+		"stateDir": stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -1275,12 +1302,12 @@ func TestProxyE2E_SSETransport_GovernanceBlocks(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello"}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-		"--max-calls", "1",
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"transport": "sse", "url": srv.URL},
+		"governance": map[string]interface{}{"maxCalls": 1},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 responses, got %d", len(results))
@@ -1298,12 +1325,7 @@ func TestProxyE2E_SSETransport_GovernanceBlocks(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"12","method":"tools/call","params":{"name":"echo_tool","arguments":{"msg":"hello2"}}}`,
 	}, "\n") + "\n"
 
-	results2 := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-		"--max-calls", "1",
-	}, input2)
+	results2 := runGuardian(t, binary, []string{"--profile", profilePath}, input2)
 
 	if len(results2) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results2))
@@ -1329,12 +1351,12 @@ func TestProxyE2E_SSETransport_Receipts(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"fail_tool","arguments":{}}}`,
 	}, "\n") + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-		"--enforcement", "advisory",
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream":   map[string]interface{}{"transport": "sse", "url": srv.URL},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 3 {
 		t.Fatalf("expected at least 3 responses, got %d", len(results))
@@ -1406,12 +1428,15 @@ func TestProxyE2E_SSETransport_CustomHeaders(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", srv.URL,
-		"--sse-header", "Authorization=Bearer e2e-test-token",
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream": map[string]interface{}{
+			"transport": "sse",
+			"url":       srv.URL,
+			"headers":   map[string]interface{}{"Authorization": "Bearer e2e-test-token"},
+		},
+		"stateDir": stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 1 {
 		t.Fatalf("expected at least 1 response, got %d", len(results))
@@ -1481,14 +1506,18 @@ func TestProxyE2E_SSETransport_OAuth2(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", mcpSrv.URL,
-		"--oauth2-token-url", tokenSrv.URL,
-		"--oauth2-client-id", "test-client",
-		"--oauth2-client-secret", "test-secret",
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream": map[string]interface{}{"transport": "sse", "url": mcpSrv.URL},
+		"auth": map[string]interface{}{
+			"oauth2": map[string]interface{}{
+				"tokenUrl":     tokenSrv.URL,
+				"clientId":     "test-client",
+				"clientSecret": "test-secret",
+			},
+		},
+		"stateDir": stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 1 {
 		t.Fatalf("expected at least 1 response, got %d", len(results))
@@ -1541,13 +1570,17 @@ func TestProxyE2E_SSETransport_TokenCommand(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
 
-	results := runGuardian(t, binary, []string{
-		"--state-dir", stateDir,
-		"--transport", "sse",
-		"--upstream-url", mcpSrv.URL,
-		"--token-command", "echo",
-		"--token-command-arg", "cmd-token-456",
-	}, input)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"upstream": map[string]interface{}{"transport": "sse", "url": mcpSrv.URL},
+		"auth": map[string]interface{}{
+			"tokenCommand": map[string]interface{}{
+				"command": "echo",
+				"args":    []string{"cmd-token-456"},
+			},
+		},
+		"stateDir": stateDir,
+	})
+	results := runGuardian(t, binary, []string{"--profile", profilePath}, input)
 
 	if len(results) < 1 {
 		t.Fatalf("expected at least 1 response, got %d", len(results))
@@ -1717,20 +1750,12 @@ func TestProxyE2E_ProfileBased(t *testing.T) {
 	serverPath := writeMockServer(t, dir)
 
 	// Create a profile file
-	profilePath := filepath.Join(dir, "test-profile.json")
-	profileContent := fmt.Sprintf(`{
-		"name": "test-profile",
-		"upstream": {
-			"transport": "stdio",
-			"command": "sh",
-			"args": [%q]
-		},
-		"governance": {
-			"enforcement": "advisory"
-		},
-		"stateDir": %q
-	}`, serverPath, filepath.Join(dir, "state"))
-	os.WriteFile(profilePath, []byte(profileContent), 0644)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"name":       "test-profile",
+		"upstream":   map[string]interface{}{"transport": "stdio", "command": "sh", "args": []string{serverPath}},
+		"governance": map[string]interface{}{"enforcement": "advisory"},
+		"stateDir":   filepath.Join(dir, "state"),
+	})
 
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
@@ -1778,17 +1803,12 @@ func TestProxyE2E_ProfileSSE(t *testing.T) {
 	srv := startMockSSEMCPServer(t, false)
 	defer srv.Close()
 
-	profilePath := filepath.Join(dir, "sse-profile.json")
-	profileContent := fmt.Sprintf(`{
-		"name": "sse-profile",
-		"upstream": {
-			"transport": "sse",
-			"url": %q
-		},
-		"governance": { "enforcement": "strict" },
-		"stateDir": %q
-	}`, srv.URL, filepath.Join(dir, "state"))
-	os.WriteFile(profilePath, []byte(profileContent), 0644)
+	profilePath := writeTestProfile(t, dir, map[string]interface{}{
+		"name":       "sse-profile",
+		"upstream":   map[string]interface{}{"transport": "sse", "url": srv.URL},
+		"governance": map[string]interface{}{"enforcement": "strict"},
+		"stateDir":   filepath.Join(dir, "state"),
+	})
 
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
@@ -1837,4 +1857,3 @@ func TestProxyE2E_ProfilesList(t *testing.T) {
 		t.Errorf("expected alpha and beta in output, got: %s", output)
 	}
 }
-

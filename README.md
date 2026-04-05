@@ -107,104 +107,51 @@ mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-files
 mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
-### Wrap an existing MCP server
-
-```bash
-# Wrap a server defined in .mcp.json
-mcp-guardian --wrap filesystem
-
-# Restore original
-mcp-guardian --unwrap filesystem
-```
-
 ### Post-session analysis
 
 ```bash
-# View receipt timeline
-mcp-guardian --view
-mcp-guardian --view --tool write_file --outcome error
-
-# Verify hash chain integrity
-mcp-guardian --verify
-
-# Session summary
-mcp-guardian --explain
-mcp-guardian --receipts
+mcp-guardian --profile atlassian --view
+mcp-guardian --profile atlassian --view --tool write_file --outcome error
+mcp-guardian --profile atlassian --verify
+mcp-guardian --profile atlassian --explain
+mcp-guardian --profile atlassian --receipts
 ```
 
 ## CLI Reference
 
 ```
-# Proxy mode (profile)
+# Proxy mode
 mcp-guardian --profile <name|path>
 
-# Proxy mode (inline stdio)
-mcp-guardian [options] -- command [args...]
+# Profile management
+--profile <name|path>           Server profile (name or path)
+--profiles                      List available profiles
+--login <name|path>             OAuth2 browser login (auto-discovers endpoints)
 
-# Proxy mode (inline SSE)
-mcp-guardian --transport sse --upstream-url <url> [options]
-
-# Core options
---enforcement strict|advisory   Enforcement mode (default: strict)
---schema off|warn|strict        Schema validation (default: warn)
---max-calls N                   Budget cap (0 = unlimited)
---timeout ms                    Upstream timeout (default: 300000)
---state-dir dir                 State directory (default: .governance)
-
-# Transport
---transport stdio|sse           Upstream transport (default: stdio)
---upstream-url <url>            MCP server URL (required for sse)
---sse-header KEY=VALUE          SSE HTTP header (repeatable)
-
-# Authentication (sse transport)
---oauth2-token-url <url>        OAuth2 token endpoint
---oauth2-client-id <id>         OAuth2 client ID
---oauth2-client-secret <secret> OAuth2 client secret
---oauth2-scope <scope>          OAuth2 scope (repeatable)
---token-command <cmd>           External token command
---token-command-arg <arg>       Token command argument (repeatable)
-
-# Server profiles
---profile <name|path>           Server profile (name from ~/.config/mcp-guardian/profiles/ or path)
---profiles                      List available server profiles
---login <name|path>             Browser login for OAuth2 authorization_code flow
-
-# Configuration files
+# Global config
 --config <path>                 Global config file (telemetry, defaults)
 
-# Tool masking
---mask <pattern>                Mask tool by glob pattern (repeatable)
---mask-file <path>              Mask patterns file (one per line)
-
-# OTLP telemetry export
---otlp-endpoint <url>           OTLP/HTTP endpoint (empty = disabled)
---otlp-header KEY=VALUE         OTLP HTTP header (repeatable)
---otlp-batch-size N             Batch size (default: 10)
---otlp-batch-timeout ms         Batch timeout (default: 5000)
-
-# Webhooks
---webhook url                   Webhook URL (repeatable)
-
-# Analysis
+# Analysis (requires --profile or --state-dir)
 --view                          Receipt timeline
 --verify                        Hash chain verification
 --explain                       Session narrative
 --receipts                      Compact summary
-
-# Integration
---wrap <server>                 Interpose proxy in .mcp.json
---unwrap <server>               Restore original .mcp.json
---mcp-config <path>             Path to .mcp.json (for wrap/unwrap)
+--state-dir <dir>               Override state directory
+--tool <name>                   Filter by tool name (for --view)
+--outcome <outcome>             Filter by outcome (for --view)
+--limit <n>                     Limit receipts (for --view)
 
 # Info
 --version                       Show version
 ```
 
+All transport, authentication, governance, and masking settings are configured in server profiles (JSON). See [examples/profiles/](examples/profiles/) for templates.
+
 ## Governance Pipeline
 
 Every `tools/call` passes through 5 gates:
 
-1. **Budget** -- Rejects if call count exceeds `--max-calls`
+1. **Budget** -- Rejects if call count exceeds `maxCalls`
 2. **Schema** -- Validates arguments against cached `inputSchema`
 3. **Constraint** -- Blocks if tool+target matches a prior failure (TTL: 1 hour)
 4. **Authority** -- Verifies session epoch matches authority epoch
@@ -228,15 +175,12 @@ The proxy injects 5 governance tools that agents can call:
 
 Hide tools from agents entirely. Masked tools are removed from `tools/list` responses and calls return a generic "tool not found" error, preventing agents from knowing the tool exists or attempting to circumvent restrictions.
 
-```bash
-# Via CLI flags
-mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
+In the profile:
 
-# Via patterns file
-mcp-guardian --mask-file masks.txt -- npx server
-
-# Via profile
-mcp-guardian --profile my-server
+```json
+{
+  "mask": ["write_*", "delete_*"]
+}
 ```
 
 Patterns use glob syntax (`*` matches any characters, `?` matches one character). In `advisory` mode, masked tools are logged but not hidden.
