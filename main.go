@@ -88,6 +88,7 @@ func main() {
 	}
 
 	// Resolve stateDir from --profile if specified and --state-dir was not explicit
+	isAnalysisCmd := *viewCmd || *verifyCmd || *explainCmd || *receiptsCmd
 	resolvedStateDir := *stateDir
 	if *profileFlag != "" {
 		profile, err := config.ResolveProfile(*profileFlag)
@@ -96,10 +97,20 @@ func main() {
 			os.Exit(1)
 		}
 		if profile.StateDir != "" {
-			// Use profile's stateDir unless --state-dir was explicitly set
 			setFlags := flagsExplicitlySet()
 			if !setFlags["state-dir"] {
 				resolvedStateDir = profile.StateDir
+			}
+		}
+	} else if isAnalysisCmd {
+		// Check if default stateDir has receipts; if not, hint about --profile
+		setFlags := flagsExplicitlySet()
+		if !setFlags["state-dir"] {
+			receiptsPath := filepath.Join(resolvedStateDir, "receipts.jsonl")
+			if _, err := os.Stat(receiptsPath); os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "No receipts found in default state directory (.governance).")
+				fmt.Fprintln(os.Stderr, "Specify a profile: mcp-guardian --profile <name> --receipts")
+				os.Exit(1)
 			}
 		}
 	}
