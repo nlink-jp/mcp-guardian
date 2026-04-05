@@ -3,6 +3,7 @@ package classify
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 )
 
 // MutationType constants.
@@ -83,10 +84,8 @@ func classifyBySchema(schema json.RawMessage) string {
 }
 
 func classifyByVerb(toolName string) string {
-	// tokenize: split on _ and -
-	name := strings.ToLower(toolName)
-	name = strings.ReplaceAll(name, "-", "_")
-	tokens := strings.Split(name, "_")
+	// tokenize: split on _, -, and camelCase boundaries
+	tokens := tokenize(toolName)
 
 	for _, token := range tokens {
 		if writeVerbs[token] {
@@ -97,6 +96,52 @@ func classifyByVerb(toolName string) string {
 		}
 	}
 	return ""
+}
+
+// tokenize splits a tool name into lowercase tokens by _, -, and camelCase boundaries.
+// Examples:
+//
+//	"get_status"           → ["get", "status"]
+//	"delete-file"          → ["delete", "file"]
+//	"getConfluenceSpaces"  → ["get", "confluence", "spaces"]
+//	"atlassianUserInfo"    → ["atlassian", "user", "info"]
+//	"getHTTPResponse"      → ["get", "http", "response"]
+func tokenize(name string) []string {
+	// First split on _ and -
+	name = strings.ReplaceAll(name, "-", "_")
+	parts := strings.Split(name, "_")
+
+	var tokens []string
+	for _, part := range parts {
+		tokens = append(tokens, splitCamelCase(part)...)
+	}
+	return tokens
+}
+
+// splitCamelCase splits a single word on camelCase boundaries and lowercases each token.
+// Handles runs of uppercase letters (acronyms) like "HTTP" in "getHTTPResponse".
+func splitCamelCase(s string) []string {
+	if s == "" {
+		return nil
+	}
+	runes := []rune(s)
+	var tokens []string
+	start := 0
+	for i := 1; i < len(runes); i++ {
+		if unicode.IsUpper(runes[i]) {
+			// Transition: lowercase→uppercase starts a new token
+			if !unicode.IsUpper(runes[i-1]) {
+				tokens = append(tokens, strings.ToLower(string(runes[start:i])))
+				start = i
+			} else if i+1 < len(runes) && !unicode.IsUpper(runes[i+1]) {
+				// Transition: uppercase run ending (e.g., "HTT|P|R" → split before last upper of run)
+				tokens = append(tokens, strings.ToLower(string(runes[start:i])))
+				start = i
+			}
+		}
+	}
+	tokens = append(tokens, strings.ToLower(string(runes[start:])))
+	return tokens
 }
 
 func classifyByArgs(args map[string]interface{}) string {
