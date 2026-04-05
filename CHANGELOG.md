@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.5.1] - 2026-04-05
+
+### Fixed
+
+- Receipt timeline (`--view`) now shows date and time (`2026-04-05 21:09:40`) instead of time only (`21:09:40`).
+
 ## [0.5.0] - 2026-04-05
 
 ### Changed
