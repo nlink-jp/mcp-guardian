@@ -4,24 +4,6 @@
     "transport": "sse",
     "url": "https://mcp.atlassian.com/v1/mcp"
   },
-  "auth": {
-    "oauth2": {
-      "flow": "authorization_code",
-      "authorizeUrl": "https://auth.atlassian.com/authorize",
-      "tokenUrl": "https://auth.atlassian.com/oauth/token",
-      "clientId": "<your-oauth-app-client-id>",
-      "scopes": [
-        "read:jira-work",
-        "write:jira-work",
-        "read:confluence-content.all",
-        "offline_access"
-      ],
-      "extraParams": {
-        "audience": "api.atlassian.com",
-        "prompt": "consent"
-      }
-    }
-  },
   "governance": {
     "enforcement": "strict",
     "maxCalls": 100
