@@ -47,7 +47,7 @@ func View(stateDir, filterTool, filterOutcome string, limit int) error {
 }
 
 func printReceipt(r *receipt.Record) {
-	ts := time.UnixMilli(r.Timestamp).Format("15:04:05")
+	ts := time.UnixMilli(r.Timestamp).Format("2006-01-02 15:04:05")
 
 	outcomeColor := green
 	switch r.Outcome {
