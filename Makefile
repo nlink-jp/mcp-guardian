@@ -4,7 +4,8 @@ GOFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 PREFIX  ?= /usr/local
 DESTDIR ?=
 
-.PHONY: build build-all package install uninstall test lint check clean help
+.PHONY: build build-all package install uninstall test lint check clean help \
+       otel-up otel-down integration-test
 
 ## build: Build the binary to dist/
 build:
@@ -50,6 +51,24 @@ lint:
 
 ## check: lint + test
 check: lint test
+
+## otel-up: Start OTel Collector container for integration testing
+otel-up:
+	@scripts/otel-up.sh
+
+## otel-down: Stop and remove OTel Collector container
+otel-down:
+	@scripts/otel-down.sh
+
+## integration-test: Run integration tests (starts OTel Collector if needed)
+integration-test:
+	@if [ -z "$$OTEL_ENDPOINT" ]; then \
+		echo "[make] Starting OTel Collector..."; \
+		eval "$$(scripts/otel-up.sh)" && \
+		go test -tags integration -v -count=1 ./internal/otlp/...; \
+	else \
+		go test -tags integration -v -count=1 ./internal/otlp/...; \
+	fi
 
 ## clean: Remove build artifacts
 clean:

@@ -13,6 +13,8 @@ MCP tool servers give AI agents powerful capabilities. Without oversight, agents
 - **Budget and convergence controls** -- Prevents runaway loops and excessive API calls
 - **Schema validation** -- Validates tool arguments before forwarding
 - **Authority tracking** -- Epoch-based session validity
+- **Tool masking** -- Forcibly hide tools from agents (wildcard patterns supported)
+- **OpenTelemetry export** -- OTLP/HTTP Logs + Traces for enterprise telemetry collection
 
 ## Features
 
@@ -24,6 +26,9 @@ MCP tool servers give AI agents powerful capabilities. Without oversight, agents
 - 5 injected meta-tools for agent self-governance
 - Post-session analysis CLI (view, verify, explain)
 - Webhook notifications (generic, Discord, Telegram)
+- OTLP/HTTP export (Logs + Traces, batched, zero-dependency)
+- Tool masking with glob patterns (`--mask`, `--server-config`)
+- Two-tier configuration (global system config + per-server config)
 - `.mcp.json` wrap/unwrap for easy integration
 
 ## Install
@@ -80,13 +85,29 @@ mcp-guardian --receipts
 # Proxy mode
 mcp-guardian [options] -- command [args...]
 
-# Options
+# Core options
 --enforcement strict|advisory   Enforcement mode (default: strict)
 --schema off|warn|strict        Schema validation (default: warn)
 --max-calls N                   Budget cap (0 = unlimited)
 --timeout ms                    Upstream timeout (default: 300000)
---webhook url                   Webhook URL (repeatable)
 --state-dir dir                 State directory (default: .governance)
+
+# Configuration files
+--config <path>                 Global config file (OTLP, webhooks, defaults)
+--server-config <path>          Per-server config file (mask, enforcement, etc.)
+
+# Tool masking
+--mask <pattern>                Mask tool by glob pattern (repeatable)
+--mask-file <path>              Mask patterns file (one per line)
+
+# OTLP telemetry export
+--otlp-endpoint <url>           OTLP/HTTP endpoint (empty = disabled)
+--otlp-header KEY=VALUE         OTLP HTTP header (repeatable)
+--otlp-batch-size N             Batch size (default: 10)
+--otlp-batch-timeout ms         Batch timeout (default: 5000)
+
+# Webhooks
+--webhook url                   Webhook URL (repeatable)
 
 # Analysis
 --view                          Receipt timeline
@@ -97,7 +118,7 @@ mcp-guardian [options] -- command [args...]
 # Integration
 --wrap <server>                 Interpose proxy in .mcp.json
 --unwrap <server>               Restore original .mcp.json
---config <path>                 Path to .mcp.json
+--mcp-config <path>             Path to .mcp.json (for wrap/unwrap)
 
 # Info
 --version                       Show version
@@ -127,6 +148,84 @@ The proxy injects 5 governance tools that agents can call:
 | `governance_clear_intent` | Clear declared intent |
 | `governance_convergence_status` | Inspect loop detection state |
 
+## Tool Masking
+
+Hide tools from agents entirely. Masked tools are removed from `tools/list` responses and calls return a generic "tool not found" error, preventing agents from knowing the tool exists or attempting to circumvent restrictions.
+
+```bash
+# Via CLI flags
+mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
+
+# Via patterns file
+mcp-guardian --mask-file masks.txt -- npx server
+
+# Via server config file
+mcp-guardian --server-config server.json -- npx server
+```
+
+Patterns use glob syntax (`*` matches any characters, `?` matches one character). In `advisory` mode, masked tools are logged but not hidden.
+
+## Configuration Files
+
+Two-tier configuration separates global settings from per-server policies:
+
+### Global config (`--config`)
+
+Shared across all MCP server instances. Ideal for MDM/EMM deployment.
+
+```json
+{
+  "otlp": {
+    "endpoint": "http://otel-collector:4318",
+    "headers": { "Authorization": "Bearer org-token" },
+    "batchSize": 10,
+    "batchTimeout": 5000
+  },
+  "webhooks": ["https://hooks.slack.com/..."],
+  "defaults": {
+    "enforcement": "strict",
+    "schema": "warn"
+  }
+}
+```
+
+### Server config (`--server-config`)
+
+Per-MCP-server policy. Overrides global defaults.
+
+```json
+{
+  "enforcement": "advisory",
+  "mask": ["write_*", "execute_*"],
+  "maxCalls": 50,
+  "schema": "strict"
+}
+```
+
+### Priority order
+
+```
+Defaults → --config (global) → --server-config (per-server) → CLI flags
+```
+
+CLI flags always win. Sensitive values (e.g., OTLP auth tokens) in config files avoid exposure via `ps`.
+
+## OTLP Telemetry Export
+
+Export audit data to any OpenTelemetry-compatible backend (Datadog, Grafana, Splunk, etc.) via OTLP/HTTP with JSON encoding. Zero external dependencies -- implemented with Go standard library only.
+
+```bash
+mcp-guardian \
+  --otlp-endpoint http://otel-collector:4318 \
+  --otlp-header "Authorization=Bearer token" \
+  -- npx server
+```
+
+- **Logs**: Each tool call receipt becomes a structured log record
+- **Traces**: Each tool call becomes a span with duration, status, and attributes
+- **Batched**: Records are buffered and flushed by size, timer, or on shutdown
+- **Local receipts are authoritative**: OTLP export is secondary; failures log to stderr without blocking MCP traffic
+
 ## Architecture
 
 ```
@@ -150,12 +249,15 @@ Upstream MCP Server
 ## Build
 
 ```bash
-make build       # Build to dist/
-make install     # Install to /usr/local/bin
-make test        # Run tests
-make check       # Lint + test
-make clean       # Clean build artifacts
-make help        # Show all targets
+make build              # Build to dist/
+make install            # Install to /usr/local/bin
+make test               # Run unit tests
+make check              # Lint + test
+make integration-test   # Run OTLP integration tests (requires podman/docker)
+make otel-up            # Start OTel Collector for manual testing
+make otel-down          # Stop OTel Collector
+make clean              # Clean build artifacts
+make help               # Show all targets
 ```
 
 ## License

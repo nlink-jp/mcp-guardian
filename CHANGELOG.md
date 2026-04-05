@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.3.0] - 2026-04-05
+
+### Added
+
+- **Tool masking** -- Hide tools from agents via glob patterns (`--mask`, `--mask-file`, or `--server-config`). Masked tools are removed from `tools/list` and calls return generic "tool not found". In `advisory` mode, masked tools are logged but not hidden.
+- **OTLP/HTTP telemetry export** -- Export audit data as OpenTelemetry Logs + Traces via OTLP/HTTP JSON encoding. Zero external dependencies. Batched with flush on size, timer, or shutdown. Local receipts remain authoritative.
+- **Two-tier configuration files** -- `--config` for global/system settings (OTLP, webhooks, defaults) and `--server-config` for per-MCP-server policies (mask, enforcement, etc.). CLI flags override both.
+- **Integration test infrastructure** -- `make integration-test` runs OTLP E2E tests against a real OTel Collector container (podman/docker). Scripts: `scripts/otel-up.sh`, `scripts/otel-down.sh`.
+- New CLI flags: `--mask`, `--mask-file`, `--otlp-endpoint`, `--otlp-header`, `--otlp-batch-size`, `--otlp-batch-timeout`, `--config`, `--server-config`.
+- New packages: `internal/mask`, `internal/otlp`.
+
+### Changed
+
+- **Breaking: `--config` flag repurposed** -- Previously pointed to `.mcp.json` (wrap/unwrap). Now points to global guardian config. Use `--mcp-config` for `.mcp.json`.
+
 ## [0.2.0] - 2026-04-05
 
 ### Changed
@@ -48,5 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Single static binary (~6MB).
 
 
+[0.3.0]: https://github.com/nlink-jp/mcp-guardian/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nlink-jp/mcp-guardian/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nlink-jp/mcp-guardian/releases/tag/v0.1.0

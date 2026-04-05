@@ -13,6 +13,8 @@ MCP ツールサーバーは AI エージェントに強力な機能を与えま
 - **バジェット・収束制御** -- 暴走ループと過剰な API コールを防止
 - **スキーマ検証** -- 転送前にツール引数を検証
 - **権限追跡** -- エポックベースのセッション有効性確認
+- **ツールマスキング** -- エージェントからツールを強制的に隠蔽（ワイルドカードパターン対応）
+- **OpenTelemetry エクスポート** -- OTLP/HTTP Logs + Traces によるエンタープライズテレメトリ収集
 
 ## 特徴
 
@@ -24,6 +26,9 @@ MCP ツールサーバーは AI エージェントに強力な機能を与えま
 - エージェント自己統治用の5つのメタツール注入
 - セッション事後分析 CLI（view, verify, explain）
 - Webhook 通知（汎用、Discord、Telegram）
+- OTLP/HTTP エクスポート（Logs + Traces、バッチ送信、外部依存ゼロ）
+- glob パターンによるツールマスキング（`--mask`, `--server-config`）
+- 2段階設定（グローバルシステム設定 + サーバー固有設定）
 - `.mcp.json` の wrap/unwrap による簡単統合
 
 ## インストール
@@ -80,13 +85,29 @@ mcp-guardian --receipts
 # プロキシモード
 mcp-guardian [options] -- command [args...]
 
-# オプション
+# 基本オプション
 --enforcement strict|advisory   実行モード（デフォルト: strict）
 --schema off|warn|strict        スキーマ検証（デフォルト: warn）
 --max-calls N                   バジェット上限（0 = 無制限）
 --timeout ms                    上流タイムアウト（デフォルト: 300000）
---webhook url                   Webhook URL（複数指定可）
 --state-dir dir                 状態ディレクトリ（デフォルト: .governance）
+
+# 設定ファイル
+--config <path>                 グローバル設定ファイル（OTLP、webhook、デフォルト値）
+--server-config <path>          サーバー固有設定ファイル（mask、enforcement等）
+
+# ツールマスキング
+--mask <pattern>                glob パターンでツールをマスク（複数指定可）
+--mask-file <path>              マスクパターンファイル（1行1パターン）
+
+# OTLP テレメトリエクスポート
+--otlp-endpoint <url>           OTLP/HTTP エンドポイント（空 = 無効）
+--otlp-header KEY=VALUE         OTLP HTTP ヘッダ（複数指定可）
+--otlp-batch-size N             バッチサイズ（デフォルト: 10）
+--otlp-batch-timeout ms         バッチタイムアウト（デフォルト: 5000）
+
+# Webhook
+--webhook url                   Webhook URL（複数指定可）
 
 # 分析
 --view                          レシートタイムライン
@@ -97,7 +118,7 @@ mcp-guardian [options] -- command [args...]
 # 統合
 --wrap <server>                 .mcp.json にプロキシを挿入
 --unwrap <server>               .mcp.json を元に戻す
---config <path>                 .mcp.json のパス
+--mcp-config <path>             .mcp.json のパス（wrap/unwrap 用）
 
 # 情報
 --version                       バージョン表示
@@ -127,6 +148,84 @@ mcp-guardian [options] -- command [args...]
 | `governance_clear_intent` | 宣言済みインテントをクリア |
 | `governance_convergence_status` | ループ検知状態を確認 |
 
+## ツールマスキング
+
+エージェントからツールを完全に隠蔽します。マスクされたツールは `tools/list` レスポンスから除外され、呼び出し時は汎用的な "tool not found" エラーを返します。ツールの存在自体をエージェントに知らせないことで、回避行動の試行を防ぎます。
+
+```bash
+# CLI フラグで指定
+mcp-guardian --mask "write_*" --mask "delete_*" -- npx server
+
+# パターンファイルで指定
+mcp-guardian --mask-file masks.txt -- npx server
+
+# サーバー設定ファイルで指定
+mcp-guardian --server-config server.json -- npx server
+```
+
+パターンは glob 構文を使用（`*` は任意の文字列、`?` は1文字にマッチ）。`advisory` モードではマスクせずログのみ記録。
+
+## 設定ファイル
+
+2段階の設定でグローバル設定とサーバー固有ポリシーを分離:
+
+### グローバル設定 (`--config`)
+
+全 MCP サーバーインスタンスで共有。MDM/EMM 配布に最適。
+
+```json
+{
+  "otlp": {
+    "endpoint": "http://otel-collector:4318",
+    "headers": { "Authorization": "Bearer org-token" },
+    "batchSize": 10,
+    "batchTimeout": 5000
+  },
+  "webhooks": ["https://hooks.slack.com/..."],
+  "defaults": {
+    "enforcement": "strict",
+    "schema": "warn"
+  }
+}
+```
+
+### サーバー固有設定 (`--server-config`)
+
+MCP サーバーごとのポリシー。グローバルデフォルトを上書き。
+
+```json
+{
+  "enforcement": "advisory",
+  "mask": ["write_*", "execute_*"],
+  "maxCalls": 50,
+  "schema": "strict"
+}
+```
+
+### 優先順位
+
+```
+デフォルト → --config（グローバル） → --server-config（サーバー固有） → CLI フラグ
+```
+
+CLI フラグが常に最優先。設定ファイル内の機密値（OTLP 認証トークン等）は `ps` で露出しません。
+
+## OTLP テレメトリエクスポート
+
+OTLP/HTTP JSON エンコーディングで、OpenTelemetry 対応バックエンド（Datadog、Grafana、Splunk 等）に監査データをエクスポート。外部依存ゼロ — Go 標準ライブラリのみで実装。
+
+```bash
+mcp-guardian \
+  --otlp-endpoint http://otel-collector:4318 \
+  --otlp-header "Authorization=Bearer token" \
+  -- npx server
+```
+
+- **Logs**: 各ツールコールレシートが構造化ログレコードに変換
+- **Traces**: 各ツールコールが期間・ステータス・属性付きスパンに変換
+- **バッチ送信**: サイズ、タイマー、またはシャットダウン時にフラッシュ
+- **ローカルレシートが正本**: OTLP エクスポートはセカンダリ。障害時は stderr にログのみ、MCP 通信をブロックしない
+
 ## アーキテクチャ
 
 ```
@@ -150,12 +249,15 @@ mcp-guardian
 ## ビルド
 
 ```bash
-make build       # dist/ にビルド
-make install     # /usr/local/bin にインストール
-make test        # テスト実行
-make check       # lint + test
-make clean       # ビルド成果物削除
-make help        # 全ターゲット表示
+make build              # dist/ にビルド
+make install            # /usr/local/bin にインストール
+make test               # ユニットテスト実行
+make check              # lint + test
+make integration-test   # OTLP 統合テスト実行（podman/docker 必要）
+make otel-up            # OTel Collector を起動（手動テスト用）
+make otel-down          # OTel Collector を停止
+make clean              # ビルド成果物削除
+make help               # 全ターゲット表示
 ```
 
 ## ライセンス
