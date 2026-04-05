@@ -1641,15 +1641,38 @@ func TestProxyE2E_AutoDiscoveryLogin(t *testing.T) {
 	os.WriteFile(profilePath, []byte(profileContent), 0644)
 
 	// Step 2: Run --login (auto-discovery)
+	// Run in background because --login waits for browser callback.
+	// We suppress the browser and simulate the redirect ourselves.
 	loginCmd := exec.Command(binary, "--login", profilePath)
 	loginCmd.Env = append(os.Environ(), "MCP_GUARDIAN_NO_BROWSER=1")
-	loginOut, err := loginCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("--login failed: %v\n%s", err, loginOut)
+	loginStdout, _ := loginCmd.StdoutPipe()
+	loginCmd.Stderr = loginCmd.Stdout // merge stderr into stdout
+	if err := loginCmd.Start(); err != nil {
+		t.Fatalf("start --login: %v", err)
 	}
 
-	if !strings.Contains(string(loginOut), "Login successful") {
-		t.Fatalf("expected 'Login successful' in output: %s", loginOut)
+	// Wait for login to print the authorize URL, then simulate browser
+	scanner := bufio.NewScanner(loginStdout)
+	var authorizeURL string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "/authorize") && strings.HasPrefix(line, "http") {
+			authorizeURL = strings.TrimSpace(line)
+			break
+		}
+	}
+	if authorizeURL == "" {
+		loginCmd.Process.Kill()
+		t.Fatal("--login did not print authorize URL")
+	}
+
+	// Simulate browser: GET the authorize URL which redirects to callback
+	http.Get(authorizeURL)
+
+	// Wait for login to complete
+	loginErr := loginCmd.Wait()
+	if loginErr != nil {
+		t.Fatalf("--login failed: %v", loginErr)
 	}
 
 	// Step 3: Verify tokens exist
