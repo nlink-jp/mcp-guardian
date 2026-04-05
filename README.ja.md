@@ -173,12 +173,13 @@ mcp-guardian --profile <name|path>
 
 ## ツールマスキング
 
-エージェントからツールを完全に隠蔽します。マスクされたツールは `tools/list` レスポンスから除外され、呼び出し時は汎用的な "tool not found" エラーを返します。ツールの存在自体をエージェントに知らせないことで、回避行動の試行を防ぎます。
+エージェントからツールを隠蔽します。**`enforcement: "strict"` の設定が必要です。** strict モードではマスクされたツールが `tools/list` レスポンスから除外され、呼び出し時は "tool not found" エラーを返します。`advisory` モードではマスク対象ツールを stderr にログ出力しますが、隠蔽やブロックは行いません。
 
 プロファイルで指定:
 
 ```json
 {
+  "governance": { "enforcement": "strict" },
   "mask": ["write_*", "delete_*"]
 }
 ```

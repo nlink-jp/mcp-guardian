@@ -173,17 +173,18 @@ The proxy injects 5 governance tools that agents can call:
 
 ## Tool Masking
 
-Hide tools from agents entirely. Masked tools are removed from `tools/list` responses and calls return a generic "tool not found" error, preventing agents from knowing the tool exists or attempting to circumvent restrictions.
+Hide tools from agents. **Requires `enforcement: "strict"` to take effect.** In strict mode, masked tools are removed from `tools/list` responses and calls return a generic "tool not found" error, preventing agents from knowing the tool exists. In `advisory` mode, masked tools are logged to stderr but remain visible and callable.
 
 In the profile:
 
 ```json
 {
+  "governance": { "enforcement": "strict" },
   "mask": ["write_*", "delete_*"]
 }
 ```
 
-Patterns use glob syntax (`*` matches any characters, `?` matches one character). In `advisory` mode, masked tools are logged but not hidden.
+Patterns use glob syntax (`*` matches any characters, `?` matches one character).
 
 ## Configuration
 
