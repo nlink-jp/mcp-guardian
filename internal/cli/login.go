@@ -34,7 +34,10 @@ func Login(profileNameOrPath string) error {
 	// Determine state directory
 	stateDir := profile.StateDir
 	if stateDir == "" {
-		stateDir = ".governance"
+		stateDir = config.DefaultStateDir(profile.Name)
+	}
+	if stateDir == "" {
+		return fmt.Errorf("cannot determine state directory for profile %q", profile.Name)
 	}
 
 	// Start local callback server first (need the port for client registration)

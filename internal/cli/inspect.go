@@ -40,7 +40,7 @@ func Inspect(profileNameOrPath, globalConfigPath string) error {
 	profile.ApplyTo(cfg)
 
 	if cfg.StateDir == "" {
-		cfg.StateDir = ".governance"
+		cfg.StateDir = config.DefaultStateDir(profile.Name)
 	}
 
 	// Create upstream transport
