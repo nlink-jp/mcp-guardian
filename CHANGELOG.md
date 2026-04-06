@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.7.1] - 2026-04-06
+
+### Fixed
+
+- `--login` and `--inspect` commands used the old `.governance` fallback for state directory, causing OAuth2 tokens and discovery cache to be saved in the wrong location after v0.7.0 migration.
+
 ## [0.7.0] - 2026-04-06
 
 ### Changed
