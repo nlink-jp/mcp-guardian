@@ -72,9 +72,9 @@ func Run(cfg *config.Config) error {
 		}
 	}
 
-	// Set genesis hash if first run
-	if auth.GenesisHash == "" && ledger.Seq() > 0 {
-		records, err := ledger.LoadAll()
+	// Set genesis hash if first run (search all receipt files)
+	if auth.GenesisHash == "" {
+		records, err := receipt.LoadAllReceipts(cfg.StateDir)
 		if err != nil {
 			return fmt.Errorf("load receipts for genesis hash: %w", err)
 		}

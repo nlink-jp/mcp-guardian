@@ -2,21 +2,15 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
 )
 
 // Explain generates a plain-language summary of the session.
+// Aggregates records from all receipt files.
 func Explain(stateDir string) error {
-	path := filepath.Join(stateDir, "receipts.jsonl")
-	records, err := receipt.LoadReceipts(path)
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No receipts.")
-			return nil
-		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
@@ -83,14 +77,10 @@ func Explain(stateDir string) error {
 }
 
 // Receipts shows a compact session summary.
+// Aggregates records from all receipt files.
 func Receipts(stateDir string) error {
-	path := filepath.Join(stateDir, "receipts.jsonl")
-	records, err := receipt.LoadReceipts(path)
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No receipts.")
-			return nil
-		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
@@ -117,9 +107,9 @@ func Receipts(stateDir string) error {
 		red, errors, reset,
 		yellow, blocked, reset,
 	)
-	if len(records) > 0 {
-		last := records[len(records)-1]
-		fmt.Printf("Chain head: %s...%s\n", last.Hash[:16], last.Hash[len(last.Hash)-8:])
-	}
+
+	// Show the most recent record's hash (records are sorted by timestamp)
+	last := records[len(records)-1]
+	fmt.Printf("Latest hash: %s...%s\n", last.Hash[:16], last.Hash[len(last.Hash)-8:])
 	return nil
 }

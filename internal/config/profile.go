@@ -69,13 +69,36 @@ type GovernanceBlock struct {
 	MaxReceiptAgeDays *int   `json:"maxReceiptAgeDays,omitempty"` // 0 = no purge
 }
 
-// ProfileDir returns the default profile directory path.
-func ProfileDir() string {
+// ConfigDir returns the base configuration directory (~/.config/mcp-guardian/).
+func ConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "mcp-guardian", "profiles")
+	return filepath.Join(home, ".config", "mcp-guardian")
+}
+
+// ProfileDir returns the default profile directory path.
+func ProfileDir() string {
+	base := ConfigDir()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "profiles")
+}
+
+// DefaultStateDir returns the default state directory for a given profile name.
+// The path is ~/.config/mcp-guardian/state/<profileName>/.
+// Returns "" if profileName is empty or contains path separators.
+func DefaultStateDir(profileName string) string {
+	if profileName == "" || strings.ContainsRune(profileName, '/') || strings.ContainsRune(profileName, filepath.Separator) {
+		return ""
+	}
+	base := ConfigDir()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "state", profileName)
 }
 
 // LoadProfile reads and parses a profile from the given file path.

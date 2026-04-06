@@ -38,7 +38,7 @@ type Config struct {
 // Defaults returns a Config with default values.
 func Defaults() *Config {
 	return &Config{
-		StateDir:          ".governance",
+		StateDir:          "",
 		Enforcement:       "strict",
 		SchemaMode:        "warn",
 		MaxCalls:          0,

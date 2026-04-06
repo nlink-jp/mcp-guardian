@@ -94,22 +94,17 @@ func main() {
 		}
 		if profile.StateDir != "" {
 			resolvedStateDir = profile.StateDir
+		} else {
+			resolvedStateDir = config.DefaultStateDir(profile.Name)
 		}
 	}
-	if resolvedStateDir == "" {
+	// Fallback for analysis commands without --profile: use cwd .governance
+	if resolvedStateDir == "" && isAnalysisCmd {
 		resolvedStateDir = ".governance"
 	}
 
 	// Analysis commands
 	if isAnalysisCmd {
-		if *profileFlag == "" && *stateDir == "" {
-			receiptsPath := filepath.Join(resolvedStateDir, "receipts.jsonl")
-			if _, err := os.Stat(receiptsPath); os.IsNotExist(err) {
-				fmt.Fprintln(os.Stderr, "No receipts found in default state directory (.governance).")
-				fmt.Fprintln(os.Stderr, "Specify a profile: mcp-guardian --profile <name> --receipts")
-				os.Exit(1)
-			}
-		}
 
 		if *viewCmd {
 			if err := cli.View(resolvedStateDir, *filterTool, *filterOutcome, *viewLimit); err != nil {
@@ -183,9 +178,13 @@ func main() {
 	}
 	profile.ApplyTo(cfg)
 
-	// Canonicalize stateDir
+	// Resolve stateDir: profile stateDir > default (~/.config/mcp-guardian/state/<name>/)
 	if cfg.StateDir == "" {
-		cfg.StateDir = ".governance"
+		cfg.StateDir = config.DefaultStateDir(profile.Name)
+	}
+	if cfg.StateDir == "" {
+		fmt.Fprintln(os.Stderr, "error: cannot determine state directory (HOME not set?)")
+		os.Exit(1)
 	}
 	abs, err := filepath.Abs(cfg.StateDir)
 	if err == nil {

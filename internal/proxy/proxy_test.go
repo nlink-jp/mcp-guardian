@@ -257,12 +257,8 @@ func TestProxyE2E_ToolCallAndReceipts(t *testing.T) {
 		t.Error("fail_tool should have isError=true")
 	}
 
-	// Verify receipts
-	ledger, err := receipt.NewLedger(stateDir)
-	if err != nil {
-		t.Fatalf("failed to open ledger: %v", err)
-	}
-	records, err := ledger.LoadAll()
+	// Verify receipts (aggregated from all process-specific files)
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
 		t.Fatalf("failed to load receipts: %v", err)
 	}
@@ -277,7 +273,7 @@ func TestProxyE2E_ToolCallAndReceipts(t *testing.T) {
 	}
 
 	// Hash chain integrity
-	intact, _, _ := receipt.VerifyChain(filepath.Join(stateDir, "receipts.jsonl"))
+	intact, _, _, _ := receipt.VerifyChain(stateDir)
 	if !intact {
 		t.Error("hash chain should be intact")
 	}
@@ -751,11 +747,7 @@ func TestProxyE2E_ToolMaskStrict(t *testing.T) {
 	}
 
 	// Verify masked call was recorded in receipts
-	ledger, err := receipt.NewLedger(stateDir)
-	if err != nil {
-		t.Fatalf("failed to open ledger: %v", err)
-	}
-	records, err := ledger.LoadAll()
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
 		t.Fatalf("failed to load receipts: %v", err)
 	}
@@ -1363,11 +1355,7 @@ func TestProxyE2E_SSETransport_Receipts(t *testing.T) {
 	}
 
 	// Verify receipts were created
-	ledger, err := receipt.NewLedger(stateDir)
-	if err != nil {
-		t.Fatalf("open ledger: %v", err)
-	}
-	records, err := ledger.LoadAll()
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
 		t.Fatalf("load receipts: %v", err)
 	}

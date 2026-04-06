@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -435,5 +436,30 @@ func TestResolveProfile_JsonSuffix(t *testing.T) {
 	}
 	if p.Name != "my-server" {
 		t.Errorf("Name=%q", p.Name)
+	}
+}
+
+func TestDefaultStateDir(t *testing.T) {
+	dir := DefaultStateDir("github-mcp")
+	if dir == "" {
+		t.Skip("HOME not set")
+	}
+	if !strings.HasSuffix(dir, filepath.Join("state", "github-mcp")) {
+		t.Errorf("DefaultStateDir=%q, want suffix state/github-mcp", dir)
+	}
+}
+
+func TestDefaultStateDir_EmptyName(t *testing.T) {
+	if dir := DefaultStateDir(""); dir != "" {
+		t.Errorf("expected empty for empty name, got %q", dir)
+	}
+}
+
+func TestDefaultStateDir_PathTraversal(t *testing.T) {
+	if dir := DefaultStateDir("../../etc"); dir != "" {
+		t.Errorf("expected empty for path traversal, got %q", dir)
+	}
+	if dir := DefaultStateDir("foo/bar"); dir != "" {
+		t.Errorf("expected empty for name with slash, got %q", dir)
 	}
 }

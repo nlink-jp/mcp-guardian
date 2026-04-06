@@ -2,22 +2,16 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/nlink-jp/mcp-guardian/internal/receipt"
 )
 
 // View displays a receipt timeline with optional filtering.
+// Aggregates records from all receipt files, sorted by timestamp.
 func View(stateDir, filterTool, filterOutcome string, limit int) error {
-	path := filepath.Join(stateDir, "receipts.jsonl")
-	records, err := receipt.LoadReceipts(path)
+	records, err := receipt.LoadAllReceipts(stateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No receipts.")
-			return nil
-		}
 		return fmt.Errorf("cannot read receipts: %w", err)
 	}
 
