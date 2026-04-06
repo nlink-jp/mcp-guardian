@@ -241,6 +241,52 @@ func TestLogin_ExtraParams(t *testing.T) {
 	}
 }
 
+func TestLogin_DefaultStateDir(t *testing.T) {
+	srv := newMockLoginServer(t)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "myprofile.json")
+
+	// Profile WITHOUT stateDir — must use DefaultStateDir
+	profile := fmt.Sprintf(`{
+		"name": "myprofile",
+		"upstream": {"transport": "sse", "url": "%s/v1/mcp"}
+	}`, srv.URL)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	err := Login(profilePath)
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	// Tokens must be saved to DefaultStateDir("myprofile"), not cwd/.governance
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine HOME")
+	}
+	expectedDir := filepath.Join(home, ".config", "mcp-guardian", "state", "myprofile")
+	tokensPath := filepath.Join(expectedDir, "tokens.json")
+	data, err := os.ReadFile(tokensPath)
+	if err != nil {
+		t.Fatalf("tokens.json not found at %s: %v", tokensPath, err)
+	}
+	// Cleanup: remove the created state directory
+	defer os.RemoveAll(expectedDir)
+
+	var tokens transport.StoredTokens
+	json.Unmarshal(data, &tokens)
+
+	if tokens.AccessToken != "login-access-tok" {
+		t.Errorf("access_token=%q, want login-access-tok", tokens.AccessToken)
+	}
+
+	// Verify .governance was NOT created in cwd
+	if _, err := os.Stat(".governance/tokens.json"); err == nil {
+		t.Error("tokens.json found in .governance/ — should use DefaultStateDir instead")
+	}
+}
+
 func TestLogin_WrongFlow(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.json")
