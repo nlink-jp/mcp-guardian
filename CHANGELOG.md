@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.7.0] - 2026-04-06
+
+### Changed
+
+- **Breaking: Default state directory moved** from `<cwd>/.governance/` to `~/.config/mcp-guardian/state/<profile-name>/`. Profiles with explicit `stateDir` are not affected. This fixes receipts being written to unpredictable locations when launched by MCP clients.
+- **Receipt files are now per-process** -- Each proxy writes to `receipts-<unixmilli>-<pid>.jsonl` instead of a shared `receipts.jsonl`. This eliminates concurrent write conflicts without file locking.
+- Analysis commands (`--view`, `--verify`, `--explain`, `--receipts`) now aggregate all receipt files, sorted by timestamp.
+- `VerifyChain` verifies each receipt file independently and reports which file is broken.
+
+### Fixed
+
+- Receipt `Append` no longer updates in-memory state (seq, lastHash) when disk write fails. Previously, `governance_status` could report receipt depth higher than what was actually persisted.
+- `DefaultStateDir` rejects empty profile names and path traversal attempts.
+- `LoadAllReceipts` continues reading remaining files when one file has errors, instead of stopping at the first failure.
+- `Purge` deletes receipt files that become empty after purging old records, instead of leaving zero-byte files.
+- Removed stale "Inline mode" section from README (removed in v0.5.0).
+
+### Backward Compatibility
+
+- Legacy `receipts.jsonl` files are still read by all analysis commands and `LoadAllReceipts`.
+- Profiles with explicit `stateDir` continue to use the specified path.
+
 ## [0.6.1] - 2026-04-06
 
 ### Fixed

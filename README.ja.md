@@ -35,7 +35,7 @@ MCP ツールサーバーは AI エージェントに強力な機能を与えま
 - OTLP/HTTP エクスポート（Logs + Traces、バッチ送信、外部依存ゼロ）
 - glob パターンによるツールマスキング（`--mask`, `--profile`）
 - 2段階設定（グローバルシステム設定 + サーバー固有設定）
-- `.mcp.json` の wrap/unwrap による簡単統合
+- プロセスごとのレシートファイルで安全な並行実行（ファイルロック不要）
 
 ## インストール
 
@@ -93,18 +93,6 @@ mcp-guardian --profile atlassian
 
 # Claude Code に追加
 claude mcp add atlassian -- mcp-guardian --profile atlassian
-```
-
-### インラインモード（プロファイルなし）
-
-```bash
-mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
-
-# オプション付き
-mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
-
-# SSE トランスポート
-mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
 ### セッション事後分析
@@ -196,6 +184,13 @@ mcp-guardian --profile <name|path>
   profiles/
     github-mcp.json        # サーバープロファイル
     filesystem.json
+  state/
+    github-mcp/            # プロファイルごとの状態（自動作成）
+      receipts-1712400000000-12345.jsonl
+      controller.json
+      authority.json
+    filesystem/
+      ...
 ```
 
 すぐに使えるテンプレートは [examples/](examples/) を参照。
@@ -322,15 +317,19 @@ mcp-guardian
 
 詳細なアーキテクチャドキュメントは [docs/architecture.md](docs/architecture.md) を参照。
 
-### 状態ディレクトリ (.governance/)
+### 状態ディレクトリ
+
+デフォルト: `~/.config/mcp-guardian/state/<プロファイル名>/`。プロファイルの `stateDir` または `--state-dir` で上書き可能。
 
 | ファイル | 内容 |
 |---------|------|
-| `receipts.jsonl` | 追記専用ハッシュチェーン監査証跡 |
+| `receipts-<ms>-<pid>.jsonl` | プロセスごとの追記専用ハッシュチェーン監査証跡 |
 | `constraints.json` | TTL 付き学習済み失敗フィンガープリント |
 | `controller.json` | 安定コントローラ UUID |
 | `authority.json` | エポック + セッションバインディング + ジェネシスハッシュ |
 | `intent.json` | 現在の宣言済みインテント |
+
+各プロキシプロセスは固有のレシートファイル（`receipts-<ミリ秒>-<PID>.jsonl`）に書き込み、ファイルロック不要で安全な並行実行を実現。分析コマンド（`--view`、`--verify` 等）は全レシートファイルを自動集約。レガシーの `receipts.jsonl` も引き続き読み取り対応。
 
 ## ビルド
 

@@ -35,7 +35,7 @@ MCP tool servers give AI agents powerful capabilities. Without oversight, agents
 - **Pluggable telemetry**: OTLP/HTTP and Splunk HEC drivers (run in parallel)
 - Tool masking with glob patterns (`--mask`, `--profile`)
 - Two-tier configuration (system global config + server profiles)
-- `.mcp.json` wrap/unwrap for easy integration
+- Per-process receipt files for safe parallel execution (no file locks)
 
 ## Install
 
@@ -93,18 +93,6 @@ mcp-guardian --profile atlassian
 
 # Add to Claude Code
 claude mcp add atlassian -- mcp-guardian --profile atlassian
-```
-
-### Inline mode (no profile)
-
-```bash
-mcp-guardian -- npx -y @modelcontextprotocol/server-filesystem /tmp
-
-# With options
-mcp-guardian --enforcement advisory -- npx -y @modelcontextprotocol/server-filesystem /tmp
-
-# SSE transport
-mcp-guardian --transport sse --upstream-url http://localhost:8080/mcp
 ```
 
 ### Post-session analysis
@@ -196,6 +184,13 @@ Two-tier configuration separates system-wide telemetry from per-server policies:
   profiles/
     github-mcp.json        # Server profile
     filesystem.json
+  state/
+    github-mcp/            # Per-profile state (auto-created)
+      receipts-1712400000000-12345.jsonl
+      controller.json
+      authority.json
+    filesystem/
+      ...
 ```
 
 See the [examples/](examples/) directory for ready-to-use templates.
@@ -368,15 +363,19 @@ Upstream MCP Server
 
 For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 
-### State directory (.governance/)
+### State directory
+
+Default: `~/.config/mcp-guardian/state/<profile-name>/`. Override per profile with `stateDir` or via `--state-dir`.
 
 | File | Contents |
 |------|----------|
-| `receipts.jsonl` | Append-only hash-chained audit trail |
+| `receipts-<ms>-<pid>.jsonl` | Per-process append-only hash-chained audit trail |
 | `constraints.json` | Learned failure fingerprints with TTL |
 | `controller.json` | Stable controller UUID |
 | `authority.json` | Epoch + session binding + genesis hash |
 | `intent.json` | Currently declared intent |
+
+Each proxy process writes to its own receipt file (`receipts-<unixmilli>-<pid>.jsonl`), avoiding file locks and enabling safe parallel execution. Analysis commands (`--view`, `--verify`, etc.) aggregate all receipt files automatically. Legacy `receipts.jsonl` files are still read for backward compatibility.
 
 ## Build
 
