@@ -5,7 +5,7 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 
 .PHONY: build build-all package install uninstall test lint check clean help \
-       otel-up otel-down integration-test
+       docs-mirror-check otel-up otel-down integration-test
 
 ## build: Build the binary to dist/
 build:
@@ -49,8 +49,12 @@ test:
 lint:
 	go vet ./...
 
-## check: lint + test
-check: lint test
+## docs-mirror-check: Verify docs/en and docs/ja are full structural mirrors
+docs-mirror-check:
+	@bash scripts/docs-mirror-check.sh
+
+## check: lint + test + docs-mirror-check
+check: lint test docs-mirror-check
 
 ## otel-up: Start OTel Collector container for integration testing
 otel-up:
