@@ -347,7 +347,7 @@ Pluggable telemetry with two built-in drivers that can run in parallel. Zero ext
 
 Both drivers can run simultaneously. Local receipts auto-purge after `maxReceiptAgeDays` (default: 7) -- telemetry backends are the durable store.
 
-For setup guides (AWS, GCP, Grafana Cloud, Datadog, Splunk, self-hosted), see [docs/otlp-setup.md](docs/otlp-setup.md).
+For setup guides (AWS, GCP, Grafana Cloud, Datadog, Splunk, self-hosted), see [docs/en/reference/otlp-setup.md](docs/en/reference/otlp-setup.md).
 
 ## Architecture
 
@@ -361,7 +361,22 @@ mcp-guardian
 Upstream MCP Server
 ```
 
-For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+For detailed architecture documentation, see [docs/en/reference/architecture.md](docs/en/reference/architecture.md).
+
+OAuth2 authorization_code login works two ways:
+
+- **Auto-discovery (default).** If the upstream MCP server's
+  authorization server supports RFC 7591 Dynamic Client Registration,
+  `mcp-guardian --login <profile>` discovers everything from a single
+  `upstream.url`.
+- **Manual setup** for providers that do not support DCR (Slack,
+  GitHub Apps, Microsoft Entra ID, most enterprise SaaS). Pre-register
+  an OAuth app, then configure `auth.oauth2` in the profile —
+  including `callbackPort` (fixed loopback port matching the
+  provider-registered redirect URI) and optionally `clientAuthMethod`
+  (`"post"` / `"basic"` / `"none"`). Worked walkthrough in
+  [docs/en/reference/oauth2-manual-setup.md](docs/en/reference/oauth2-manual-setup.md).
+  Slack example profile at [examples/profiles/slack.json](examples/profiles/slack.json).
 
 ### State directory
 

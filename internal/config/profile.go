@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -44,14 +45,25 @@ type AuthBlock struct {
 // Supports two flows:
 //   - "client_credentials" (default): M2M, no browser. Requires clientSecret.
 //   - "authorization_code": Browser login via --login. Uses PKCE, clientSecret optional.
+//
+// CallbackPort and ClientAuthMethod cover providers that do not
+// implement RFC 7591 Dynamic Client Registration and instead require
+// a pre-registered OAuth app (Slack, GitHub Apps, Microsoft Entra ID,
+// most enterprise SaaS). Pre-registered apps must declare an exact
+// redirect_uri at registration time, and some require a specific
+// token-endpoint client authentication method. See
+// docs/en/adr/0001-pre-registered-oauth-client.md.
 type OAuth2Block struct {
-	Flow         string            `json:"flow,omitempty"`         // "client_credentials" (default) or "authorization_code"
-	AuthorizeURL string            `json:"authorizeUrl,omitempty"` // authorization endpoint (authorization_code only)
-	TokenURL     string            `json:"tokenUrl"`
-	ClientID     string            `json:"clientId"`
-	ClientSecret string            `json:"clientSecret,omitempty"` // required for client_credentials, optional for authorization_code
-	Scopes       []string          `json:"scopes,omitempty"`
-	ExtraParams  map[string]string `json:"extraParams,omitempty"`  // additional authorize URL params (e.g., audience, prompt)
+	Flow             string            `json:"flow,omitempty"`             // "client_credentials" (default) or "authorization_code"
+	AuthorizeURL     string            `json:"authorizeUrl,omitempty"`     // authorization endpoint (authorization_code only)
+	TokenURL         string            `json:"tokenUrl"`
+	ClientID         string            `json:"clientId"`
+	ClientSecret     string            `json:"clientSecret,omitempty"`     // required for client_credentials, optional for authorization_code
+	Scopes           []string          `json:"scopes,omitempty"`
+	ExtraParams      map[string]string `json:"extraParams,omitempty"`      // additional authorize URL params (e.g., audience, prompt)
+	CallbackPort     int               `json:"callbackPort,omitempty"`     // 1-65535. Fixed loopback port for the --login OAuth callback server. 0/unset = ephemeral (default). Required when the provider rejects port-flexible loopback URIs.
+	CallbackScheme   string            `json:"callbackScheme,omitempty"`   // "http" (default) or "https". Some providers (notably Slack) reject http:// loopback URIs at app-registration time; "https" makes the callback listener present an ephemeral self-signed TLS cert (browsers show a one-time warning).
+	ClientAuthMethod string            `json:"clientAuthMethod,omitempty"` // "post" (default), "basic", "none". How client credentials are sent to the token endpoint. RFC 6749 §2.3.1.
 }
 
 // TokenCommandBlock holds external token command settings.
@@ -102,13 +114,21 @@ func DefaultStateDir(profileName string) string {
 }
 
 // LoadProfile reads and parses a profile from the given file path.
+//
+// Decoding is strict: unknown fields are rejected. Profiles are
+// hand-written JSON and silently-ignored fields turn typos like
+// "callbackSchema" (vs. correct "callbackScheme") into invisible
+// bugs where the feature simply does nothing. Erroring out at load
+// time costs a few lines and saves real debugging time.
 func LoadProfile(path string) (*Profile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read profile: %w", err)
 	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var p Profile
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("parse profile: %w", err)
 	}
 	// Set name from filename if not specified in JSON
@@ -207,6 +227,27 @@ func (p *Profile) Validate() error {
 			default:
 				return fmt.Errorf("profile %q: auth.oauth2.flow must be 'client_credentials' or 'authorization_code'", p.Name)
 			}
+			if p.Auth.OAuth2.CallbackPort != 0 {
+				if p.Auth.OAuth2.CallbackPort < 1 || p.Auth.OAuth2.CallbackPort > 65535 {
+					return fmt.Errorf("profile %q: auth.oauth2.callbackPort must be between 1 and 65535, got %d", p.Name, p.Auth.OAuth2.CallbackPort)
+				}
+			}
+			switch p.Auth.OAuth2.CallbackScheme {
+			case "", "http", "https":
+			default:
+				return fmt.Errorf("profile %q: auth.oauth2.callbackScheme must be 'http' or 'https', got %q", p.Name, p.Auth.OAuth2.CallbackScheme)
+			}
+			switch p.Auth.OAuth2.ClientAuthMethod {
+			case "", "post", "basic", "none":
+			default:
+				return fmt.Errorf("profile %q: auth.oauth2.clientAuthMethod must be 'post', 'basic', or 'none', got %q", p.Name, p.Auth.OAuth2.ClientAuthMethod)
+			}
+			if p.Auth.OAuth2.ClientAuthMethod == "basic" && p.Auth.OAuth2.ClientSecret == "" {
+				return fmt.Errorf("profile %q: auth.oauth2.clientAuthMethod=basic requires clientSecret", p.Name)
+			}
+			if p.Auth.OAuth2.ClientAuthMethod == "none" && p.Auth.OAuth2.ClientSecret != "" {
+				return fmt.Errorf("profile %q: auth.oauth2.clientAuthMethod=none forbids clientSecret (use 'post' or 'basic' for confidential clients)", p.Name)
+			}
 		}
 		if p.Auth.TokenCommand != nil {
 			if p.Auth.TokenCommand.Command == "" {
@@ -270,6 +311,9 @@ func (p *Profile) ApplyTo(cfg *Config) {
 			cfg.OAuth2ClientID = p.Auth.OAuth2.ClientID
 			cfg.OAuth2ClientSecret = p.Auth.OAuth2.ClientSecret
 			cfg.OAuth2Scopes = p.Auth.OAuth2.Scopes
+			cfg.OAuth2CallbackPort = p.Auth.OAuth2.CallbackPort
+			cfg.OAuth2CallbackScheme = p.Auth.OAuth2.CallbackScheme
+			cfg.OAuth2ClientAuthMethod = p.Auth.OAuth2.ClientAuthMethod
 		}
 		if p.Auth.TokenCommand != nil {
 			cfg.TokenCommand = p.Auth.TokenCommand.Command

@@ -301,7 +301,7 @@ mcp-guardian \
 
 両ドライバは並列動作可能。ローカルレシートは `maxReceiptAgeDays`（デフォルト: 7日）で自動パージ — テレメトリが永続保存先。
 
-AWS、GCP、Grafana Cloud、Datadog、Splunk、セルフホスト構成の詳細は [docs/otlp-setup.md](docs/otlp-setup.md) を参照。
+AWS、GCP、Grafana Cloud、Datadog、Splunk、セルフホスト構成の詳細は [docs/ja/reference/otlp-setup.ja.md](docs/ja/reference/otlp-setup.ja.md) を参照。
 
 ## アーキテクチャ
 
@@ -315,7 +315,23 @@ mcp-guardian
 上流 MCP サーバー
 ```
 
-詳細なアーキテクチャドキュメントは [docs/architecture.md](docs/architecture.md) を参照。
+詳細なアーキテクチャドキュメントは [docs/ja/reference/architecture.ja.md](docs/ja/reference/architecture.ja.md) を参照。
+
+OAuth2 authorization_code ログインは 2 通り:
+
+- **自動 discovery (デフォルト)**。上流 MCP サーバの認可サーバが
+  RFC 7591 Dynamic Client Registration をサポートしているなら、
+  `mcp-guardian --login <profile>` が `upstream.url` 1 つだけから全
+  自動で構成する。
+- **手動セットアップ** — DCR 未対応プロバイダ (Slack, GitHub Apps,
+  Microsoft Entra ID、ほとんどのエンタープライズ SaaS) 向け。プロバ
+  イダで OAuth アプリを事前登録し、profile の `auth.oauth2` を書く。
+  `callbackPort` (プロバイダ側に登録した redirect URI と一致する固
+  定ループバックポート) と任意で `clientAuthMethod`
+  (`"post"` / `"basic"` / `"none"`) を含む。実例手順は
+  [docs/ja/reference/oauth2-manual-setup.ja.md](docs/ja/reference/oauth2-manual-setup.ja.md)、
+  Slack 用の profile サンプルは
+  [examples/profiles/slack.json](examples/profiles/slack.json)。
 
 ### 状態ディレクトリ
 

@@ -463,3 +463,141 @@ func TestDefaultStateDir_PathTraversal(t *testing.T) {
 		t.Errorf("expected empty for name with slash, got %q", dir)
 	}
 }
+
+// TestProfileValidate_OAuth2NewFields exercises the validation rules
+// introduced for pre-registered confidential clients (callbackPort,
+// clientAuthMethod). See docs/en/adr/0001-pre-registered-oauth-client.md.
+func TestProfileValidate_OAuth2NewFields(t *testing.T) {
+	mkProfile := func(mutate func(b *OAuth2Block)) *Profile {
+		b := &OAuth2Block{
+			Flow:         "authorization_code",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			TokenURL:     "https://auth.example.com/token",
+			ClientID:     "test-client",
+		}
+		mutate(b)
+		return &Profile{
+			Name: "test",
+			Auth: &AuthBlock{OAuth2: b},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		profile *Profile
+		wantErr bool
+	}{
+		// callbackPort
+		{"callbackPort=0 (ephemeral, default)", mkProfile(func(b *OAuth2Block) {}), false},
+		{"callbackPort=1 (lower bound)", mkProfile(func(b *OAuth2Block) { b.CallbackPort = 1 }), false},
+		{"callbackPort=65535 (upper bound)", mkProfile(func(b *OAuth2Block) { b.CallbackPort = 65535 }), false},
+		{"callbackPort=43117 (typical)", mkProfile(func(b *OAuth2Block) { b.CallbackPort = 43117 }), false},
+		{"callbackPort=-1", mkProfile(func(b *OAuth2Block) { b.CallbackPort = -1 }), true},
+		{"callbackPort=65536", mkProfile(func(b *OAuth2Block) { b.CallbackPort = 65536 }), true},
+
+		// callbackScheme
+		{`callbackScheme="" (default = http)`, mkProfile(func(b *OAuth2Block) {}), false},
+		{`callbackScheme="http"`, mkProfile(func(b *OAuth2Block) { b.CallbackScheme = "http" }), false},
+		{`callbackScheme="https"`, mkProfile(func(b *OAuth2Block) { b.CallbackScheme = "https" }), false},
+		{`callbackScheme="ftp"`, mkProfile(func(b *OAuth2Block) { b.CallbackScheme = "ftp" }), true},
+
+		// clientAuthMethod
+		{`clientAuthMethod="" (default = post)`, mkProfile(func(b *OAuth2Block) {}), false},
+		{`clientAuthMethod="post"`, mkProfile(func(b *OAuth2Block) { b.ClientAuthMethod = "post" }), false},
+		{`clientAuthMethod="basic" with secret`, mkProfile(func(b *OAuth2Block) {
+			b.ClientAuthMethod = "basic"
+			b.ClientSecret = "secret"
+		}), false},
+		{`clientAuthMethod="basic" without secret`, mkProfile(func(b *OAuth2Block) {
+			b.ClientAuthMethod = "basic"
+		}), true},
+		{`clientAuthMethod="none" without secret`, mkProfile(func(b *OAuth2Block) {
+			b.ClientAuthMethod = "none"
+		}), false},
+		{`clientAuthMethod="none" with secret`, mkProfile(func(b *OAuth2Block) {
+			b.ClientAuthMethod = "none"
+			b.ClientSecret = "secret"
+		}), true},
+		{`clientAuthMethod="junk"`, mkProfile(func(b *OAuth2Block) { b.ClientAuthMethod = "junk" }), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.profile.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate(): want error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate(): unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoadProfile_RejectsUnknownField guards against the silent-typo
+// failure mode demonstrated in production: a profile with
+// "callbackSchema" (misspelled) instead of "callbackScheme" used to
+// load cleanly and then silently fall back to http://, which the
+// Slack OAuth registration rejects. Strict decoding catches the
+// typo at load time instead.
+func TestLoadProfile_RejectsUnknownField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "typo.json")
+	body := []byte(`{
+		"name": "typo",
+		"upstream": {"transport": "sse", "url": "https://mcp.example.com/mcp"},
+		"auth": {
+			"oauth2": {
+				"flow": "authorization_code",
+				"authorizeUrl": "https://a/authz",
+				"tokenUrl":     "https://a/token",
+				"clientId":     "cid",
+				"clientSecret": "cs",
+				"callbackPort": 7777,
+				"callbackSchema": "https"
+			}
+		}
+	}`)
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := LoadProfile(path)
+	if err == nil {
+		t.Fatal("LoadProfile: want error for unknown field callbackSchema, got nil")
+	}
+	if !strings.Contains(err.Error(), "callbackSchema") {
+		t.Errorf("error %q should mention the offending field name", err.Error())
+	}
+}
+
+// TestProfileApplyTo_OAuth2NewFields verifies that callbackPort and
+// clientAuthMethod flow through Profile.ApplyTo into the runtime
+// Config struct used by proxy.CreateUpstreamTransport.
+func TestProfileApplyTo_OAuth2NewFields(t *testing.T) {
+	p := &Profile{
+		Auth: &AuthBlock{
+			OAuth2: &OAuth2Block{
+				Flow:             "authorization_code",
+				AuthorizeURL:     "https://a/authz",
+				TokenURL:         "https://a/token",
+				ClientID:         "cid",
+				ClientSecret:     "cs",
+				CallbackPort:     43117,
+				CallbackScheme:   "https",
+				ClientAuthMethod: "basic",
+			},
+		},
+	}
+	cfg := Defaults()
+	p.ApplyTo(cfg)
+
+	if cfg.OAuth2CallbackPort != 43117 {
+		t.Errorf("OAuth2CallbackPort=%d, want 43117", cfg.OAuth2CallbackPort)
+	}
+	if cfg.OAuth2CallbackScheme != "https" {
+		t.Errorf("OAuth2CallbackScheme=%q, want %q", cfg.OAuth2CallbackScheme, "https")
+	}
+	if cfg.OAuth2ClientAuthMethod != "basic" {
+		t.Errorf("OAuth2ClientAuthMethod=%q, want %q", cfg.OAuth2ClientAuthMethod, "basic")
+	}
+}

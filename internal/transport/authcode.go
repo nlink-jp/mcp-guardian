@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,10 +25,11 @@ type StoredTokens struct {
 
 // StoredTokenConfig holds settings for the stored token provider.
 type StoredTokenConfig struct {
-	StateDir     string
-	TokenURL     string
-	ClientID     string
-	ClientSecret string // may be empty for public clients (PKCE)
+	StateDir         string
+	TokenURL         string
+	ClientID         string
+	ClientSecret     string // may be empty for public clients (PKCE)
+	ClientAuthMethod string // "" / "post" (default), "basic", or "none". See ClientAuthConfig in clientauth.go.
 }
 
 // storedTokenProvider implements TokenProvider using tokens stored on disk.
@@ -137,17 +139,31 @@ func (p *storedTokenProvider) Invalidate() {
 }
 
 // refreshTokens exchanges a refresh token for new tokens.
+//
+// The request is built explicitly (rather than http.PostForm) so the
+// ClientAuthMethod setting can route client credentials to either the
+// form body (post / none) or an Authorization: Basic header (basic).
 func refreshTokens(cfg StoredTokenConfig, refreshToken string) (*StoredTokens, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
-		"client_id":     {cfg.ClientID},
 	}
-	if cfg.ClientSecret != "" {
-		form.Set("client_secret", cfg.ClientSecret)
+	req, err := http.NewRequest("POST", cfg.TokenURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build refresh request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ApplyClientAuth(req, form, ClientAuthConfig{
+		Method:       cfg.ClientAuthMethod,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+	})
+	req.Body = http.NoBody
+	encoded := form.Encode()
+	req.Body = io.NopCloser(strings.NewReader(encoded))
+	req.ContentLength = int64(len(encoded))
 
-	resp, err := http.PostForm(cfg.TokenURL, form)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refresh request: %w", err)
 	}

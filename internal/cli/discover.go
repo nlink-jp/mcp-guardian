@@ -218,7 +218,11 @@ func fetchAuthServerMetadata(authServerURL string) (*authServerMetadata, error) 
 // The redirectURI must match the actual callback server address (including port).
 func registerClient(meta *authServerMetadata, redirectURI string) (clientID, clientSecret string, err error) {
 	if meta.RegistrationEndpoint == "" {
-		return "", "", fmt.Errorf("authorization server does not support dynamic client registration")
+		return "", "", fmt.Errorf(
+			"authorization server does not support dynamic client registration. " +
+				"Pre-register an OAuth app with the provider and add an auth.oauth2 block " +
+				"(clientId, clientSecret, callbackPort) to your profile manually. " +
+				"See docs/en/reference/oauth2-manual-setup.md for a worked example.")
 	}
 
 	regReq := map[string]interface{}{
@@ -246,7 +250,12 @@ func registerClient(meta *authServerMetadata, redirectURI string) (clientID, cli
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", "", fmt.Errorf("registration failed (HTTP %d): %s", resp.StatusCode, truncStr(string(body), 200))
+		return "", "", fmt.Errorf(
+			"registration failed (HTTP %d): %s. "+
+				"Some servers advertise a registration endpoint but reject dynamic registration in practice — "+
+				"if so, pre-register an OAuth app and configure auth.oauth2 manually "+
+				"(see docs/en/reference/oauth2-manual-setup.md).",
+			resp.StatusCode, truncStr(string(body), 200))
 	}
 
 	var regResp struct {

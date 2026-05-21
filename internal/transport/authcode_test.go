@@ -248,3 +248,91 @@ func TestStoredTokenProvider_PreservesRefreshToken(t *testing.T) {
 		t.Errorf("refresh_token=%q, want original-refresh (should be preserved)", saved.RefreshToken)
 	}
 }
+
+// TestStoredTokenProvider_RefreshClientAuthMethod verifies that
+// ClientAuthMethod routes credentials to the correct location at
+// refresh time:
+//   - "post" / "" → form body
+//   - "basic"     → Authorization: Basic header, NOT form body
+//
+// Drives the wiring decided in ADR 0001 (pre-registered confidential
+// clients like Microsoft Entra ID require Basic auth on the token
+// endpoint).
+func TestStoredTokenProvider_RefreshClientAuthMethod(t *testing.T) {
+	cases := []struct {
+		name           string
+		method         string
+		wantFormSecret string // "" = secret must NOT appear in form
+		wantBasicAuth  bool   // true = Authorization: Basic … must be set
+	}{
+		{name: "post sends secret in form", method: "post", wantFormSecret: "topsecret", wantBasicAuth: false},
+		{name: "empty defaults to post", method: "", wantFormSecret: "topsecret", wantBasicAuth: false},
+		{name: "basic uses Authorization header", method: "basic", wantFormSecret: "", wantBasicAuth: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			var gotFormSecret, gotFormID string
+			var gotBasicUser, gotBasicPass string
+			var gotBasicOK bool
+
+			tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.ParseForm()
+				gotFormSecret = r.Form.Get("client_secret")
+				gotFormID = r.Form.Get("client_id")
+				gotBasicUser, gotBasicPass, gotBasicOK = r.BasicAuth()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"access_token": "fresh-tok",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+				})
+			}))
+			defer tokenSrv.Close()
+
+			SaveTokens(dir, &StoredTokens{
+				AccessToken:  "expired",
+				RefreshToken: "rt",
+				ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+			})
+
+			provider, err := NewStoredTokenProvider(StoredTokenConfig{
+				StateDir:         dir,
+				TokenURL:         tokenSrv.URL,
+				ClientID:         "client-abc",
+				ClientSecret:     "topsecret",
+				ClientAuthMethod: tc.method,
+			})
+			if err != nil {
+				t.Fatalf("NewStoredTokenProvider: %v", err)
+			}
+			if _, err := provider.Token(); err != nil {
+				t.Fatalf("Token(): %v", err)
+			}
+
+			if gotFormSecret != tc.wantFormSecret {
+				t.Errorf("form client_secret=%q, want %q", gotFormSecret, tc.wantFormSecret)
+			}
+			if tc.wantBasicAuth {
+				if !gotBasicOK {
+					t.Errorf("Authorization: Basic header not set")
+				}
+				if gotBasicUser != "client-abc" || gotBasicPass != "topsecret" {
+					t.Errorf("Basic auth=%q:%q, want client-abc:topsecret", gotBasicUser, gotBasicPass)
+				}
+				if gotFormID != "" {
+					t.Errorf("form client_id=%q must be empty when Basic auth is used", gotFormID)
+				}
+			} else {
+				if gotBasicOK {
+					t.Errorf("unexpected Basic auth: %q:%q", gotBasicUser, gotBasicPass)
+				}
+				if gotFormID != "client-abc" {
+					t.Errorf("form client_id=%q, want client-abc", gotFormID)
+				}
+			}
+		})
+	}
+}

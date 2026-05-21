@@ -14,6 +14,9 @@ type Config struct {
 	OAuth2ClientID   string            // OAuth2 client ID
 	OAuth2ClientSecret string          // OAuth2 client secret
 	OAuth2Scopes     []string          // OAuth2 scopes (space-separated in token request)
+	OAuth2CallbackPort     int         // fixed loopback port for the --login callback server (1-65535). 0 = ephemeral (default).
+	OAuth2CallbackScheme   string      // "http" (default) or "https". Selects loopback URI scheme for the --login callback; https presents an ephemeral self-signed cert.
+	OAuth2ClientAuthMethod string      // "post" (default), "basic", or "none". How client credentials are sent to the token endpoint.
 	TokenCommand     string            // external command to obtain a Bearer token
 	TokenCommandArgs []string          // arguments for the token command
 	StateDir     string

@@ -566,10 +566,11 @@ func CreateUpstreamTransport(cfg *config.Config) (transport.Transport, error) {
 		// Configure authentication
 		// Try stored tokens first (from --login with discovery or explicit config)
 		storedProvider, storedErr := transport.NewStoredTokenProvider(transport.StoredTokenConfig{
-			StateDir:     cfg.StateDir,
-			TokenURL:     cfg.OAuth2TokenURL,
-			ClientID:     cfg.OAuth2ClientID,
-			ClientSecret: cfg.OAuth2ClientSecret,
+			StateDir:         cfg.StateDir,
+			TokenURL:         cfg.OAuth2TokenURL,
+			ClientID:         cfg.OAuth2ClientID,
+			ClientSecret:     cfg.OAuth2ClientSecret,
+			ClientAuthMethod: cfg.OAuth2ClientAuthMethod,
 		})
 		if cfg.OAuth2Flow == "authorization_code" || (storedErr == nil && cfg.OAuth2TokenURL == "" && cfg.TokenCommand == "") {
 			if storedErr != nil {

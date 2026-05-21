@@ -3,9 +3,10 @@ package cli
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"crypto/subtle"
 	"fmt"
 	"html"
 	"io"
@@ -22,10 +23,23 @@ import (
 	"github.com/nlink-jp/mcp-guardian/internal/transport"
 )
 
+// LoginOptions tunes the behaviour of Login.
+//
+// CallbackPort, when non-zero, forces the OAuth callback server to
+// bind that specific loopback port instead of letting the OS pick an
+// ephemeral one. This is required by OAuth providers that do not
+// support RFC 7591 Dynamic Client Registration and demand an exact
+// redirect_uri at app-registration time (Slack, GitHub, Microsoft
+// Entra ID, most enterprise SaaS). Zero means "use the profile's
+// auth.oauth2.callbackPort, or fall back to ephemeral".
+type LoginOptions struct {
+	CallbackPort int
+}
+
 // Login performs the OAuth2 Authorization Code flow with PKCE.
 // Opens a browser for user authentication, receives the callback,
 // exchanges the code for tokens, and stores them in the profile's state directory.
-func Login(profileNameOrPath string) error {
+func Login(profileNameOrPath string, opts LoginOptions) error {
 	profile, err := config.ResolveProfile(profileNameOrPath)
 	if err != nil {
 		return fmt.Errorf("load profile: %w", err)
@@ -40,13 +54,52 @@ func Login(profileNameOrPath string) error {
 		return fmt.Errorf("cannot determine state directory for profile %q", profile.Name)
 	}
 
-	// Start local callback server first (need the port for client registration)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("start callback server: %w", err)
+	// Resolve the OAuth2 callback port: CLI flag wins, then profile,
+	// else 0 (= ephemeral, current behaviour). Pre-registered OAuth
+	// apps require an exact redirect_uri so the port must be stable
+	// across logins; ephemeral remains the default for DCR-capable
+	// providers where the port is registered fresh each time.
+	port := opts.CallbackPort
+	if port == 0 && profile.Auth != nil && profile.Auth.OAuth2 != nil {
+		port = profile.Auth.OAuth2.CallbackPort
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	// Resolve the callback scheme. Some providers (notably Slack)
+	// reject http:// loopback URIs at app registration time and only
+	// accept https://. When the profile asks for https we wrap the
+	// TCP listener in a TLS listener using an ephemeral self-signed
+	// certificate (see generateLoopbackCert). The browser will show
+	// a "not secure" warning that the user must click through — the
+	// cert is loopback-only and never leaves memory.
+	scheme := "http"
+	if profile.Auth != nil && profile.Auth.OAuth2 != nil && profile.Auth.OAuth2.CallbackScheme == "https" {
+		scheme = "https"
+	}
+	// Start local callback server first (need the port for client registration)
+	tcpListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return fmt.Errorf("start callback server on port %d: %w (pick another port via callbackPort or --callback-port)", port, err)
+	}
+	port = tcpListener.Addr().(*net.TCPAddr).Port
+
+	var listener net.Listener = tcpListener
+	host := "127.0.0.1"
+	if scheme == "https" {
+		cert, certErr := generateLoopbackCert()
+		if certErr != nil {
+			tcpListener.Close()
+			return fmt.Errorf("generate self-signed cert for https callback: %w", certErr)
+		}
+		listener = tls.NewListener(tcpListener, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		})
+		// Use the DNS name in the redirect URI so providers that
+		// restrict redirect URIs to hostnames (e.g. Slack) accept
+		// the registration; the cert SAN covers both forms.
+		host = "localhost"
+		fmt.Println("Note: the browser will show a \"not secure\" warning for the self-signed TLS callback — clicking through is expected.")
+	}
+	redirectURI := fmt.Sprintf("%s://%s:%d/callback", scheme, host, port)
 
 	// If no explicit OAuth2 config, auto-discover from MCP server
 	if profile.Auth == nil || profile.Auth.OAuth2 == nil {
@@ -179,20 +232,29 @@ func Login(profileNameOrPath string) error {
 		return fmt.Errorf("authorization timed out (5 minutes)")
 	}
 
-	// Exchange code for tokens
+	// Exchange code for tokens.
+	// Build the request explicitly (rather than http.PostForm) so we
+	// can honour ClientAuthMethod=basic by setting an Authorization
+	// header instead of stuffing the secret into the form body.
 	fmt.Println("Exchanging authorization code for tokens...")
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
-		"client_id":     {oauth.ClientID},
 		"code_verifier": {verifier},
 	}
-	if oauth.ClientSecret != "" {
-		form.Set("client_secret", oauth.ClientSecret)
+	req, err := http.NewRequest("POST", oauth.TokenURL, nil)
+	if err != nil {
+		return fmt.Errorf("build token exchange request: %w", err)
 	}
-
-	resp, err := http.PostForm(oauth.TokenURL, form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	transport.ApplyClientAuth(req, form, transport.ClientAuthConfig{
+		Method:       oauth.ClientAuthMethod,
+		ClientID:     oauth.ClientID,
+		ClientSecret: oauth.ClientSecret,
+	})
+	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("token exchange request: %w", err)
 	}

@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [Unreleased]
+
+### Added
+
+- **Pre-registered OAuth2 confidential client support.** mcp-guardian
+  can now talk to MCP servers whose authorization server does not
+  implement RFC 7591 Dynamic Client Registration — Slack
+  (`https://mcp.slack.com/mcp`), GitHub Apps, Microsoft Entra ID, and
+  most enterprise SaaS providers. The user pre-registers an OAuth app
+  at the provider and writes the resulting `client_id` /
+  `client_secret` into the profile. Design rationale and the resolved
+  open questions are recorded in
+  [`docs/en/adr/0001-pre-registered-oauth-client.md`](docs/en/adr/0001-pre-registered-oauth-client.md);
+  the operational walkthrough lives in
+  [`docs/en/reference/oauth2-manual-setup.md`](docs/en/reference/oauth2-manual-setup.md)
+  (Japanese mirror under `docs/ja/`).
+- **`auth.oauth2.callbackPort`** profile field. Fixed loopback port
+  for the `--login` OAuth callback server. Pre-registered OAuth apps
+  require an exact `redirect_uri` allow-list match; the
+  previously-ephemeral port made this impossible. Zero / unset keeps
+  the current ephemeral behaviour for DCR-capable providers.
+- **`auth.oauth2.callbackScheme`** profile field. `"http"` (default,
+  current behaviour) or `"https"`. When `"https"`, `--login` mints an
+  ephemeral self-signed TLS certificate (SANs for `127.0.0.1`, `::1`,
+  `localhost`; ECDSA P-256; 1-hour validity; held in memory only) and
+  wraps the callback listener in `tls.NewListener`. Required by
+  providers that reject `http://` loopback redirect URIs at app
+  registration time — Slack is the documented case. Browsers display
+  a one-time self-signed-cert warning that the user clicks through
+  (loopback-only, never leaves the process). See ADR 0001 §Decision §4.
+- **`auth.oauth2.clientAuthMethod`** profile field. Selects how
+  client credentials are sent to the token endpoint:
+  `"post"` (default — form body, the current behaviour), `"basic"`
+  (HTTP `Authorization: Basic ...` header — required by Microsoft
+  Entra ID and some Okta tenants), or `"none"` (PKCE-only public
+  client; secret forbidden). Used by both initial token exchange and
+  refresh.
+- **`--callback-port N`** CLI flag. Overrides
+  `profile.auth.oauth2.callbackPort` for a single invocation, handy
+  for one-off debugging without editing the profile.
+- **`examples/profiles/slack.json`**: worked-example profile for the
+  official Slack MCP server. `<replace-with-…>` placeholders to
+  prevent accidentally-committed secrets.
+- **`scripts/docs-mirror-check.sh`**: enforces the `docs/en/` ↔
+  `docs/ja/` structural mirror rule. Wired into `make check`.
+
+### Changed
+
+- **Profile JSON decoding is now strict.** Unknown fields are
+  rejected at load time instead of being silently ignored. Found in
+  practice: a profile with `"callbackSchema": "https"` (misspelled —
+  the correct field is `callbackScheme`) used to load cleanly and
+  then silently fall back to `http://`, which the Slack OAuth
+  registration rejects. The strict path turns this kind of typo into
+  an immediate parse error citing the offending field name.
+- **Docs restructured to `docs/{en,ja}/{adr,reference,history}/`
+  three-layer.** `docs/architecture.md` →
+  `docs/en/reference/architecture.md` (+ Japanese mirror); same for
+  `docs/otlp-setup.md`.
+- **DCR-failed error message** now hints at the manual setup path.
+  Previously: `authorization server does not support dynamic client
+  registration`. Now: same line followed by a pointer to
+  `docs/en/reference/oauth2-manual-setup.md` and the profile shape
+  the user needs.
+- `cli.Login(profileNameOrPath string)` is now
+  `cli.Login(profileNameOrPath string, opts cli.LoginOptions)`.
+  Internal-only function; the sole caller (main.go) has been updated.
+
 ## [0.7.1] - 2026-04-06
 
 ### Fixed

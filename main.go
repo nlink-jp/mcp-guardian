@@ -18,6 +18,7 @@ func main() {
 	profileFlag := flag.String("profile", "", "Server profile name or path")
 	profilesCmd := flag.Bool("profiles", false, "List available server profiles")
 	loginCmd := flag.String("login", "", "Perform OAuth2 browser login for a profile")
+	callbackPort := flag.Int("callback-port", 0, "Fixed loopback port for the OAuth2 --login callback (overrides profile.auth.oauth2.callbackPort)")
 	inspectCmd := flag.Bool("inspect", false, "Show server info and available tools")
 
 	// Global config
@@ -63,7 +64,7 @@ func main() {
 
 	// OAuth2 browser login
 	if *loginCmd != "" {
-		if err := cli.Login(*loginCmd); err != nil {
+		if err := cli.Login(*loginCmd, cli.LoginOptions{CallbackPort: *callbackPort}); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}

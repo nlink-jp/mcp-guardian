@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nlink-jp/mcp-guardian/internal/transport"
@@ -97,7 +100,7 @@ func TestLogin_AutoDiscovery(t *testing.T) {
 
 	// Run login — it will auto-discover, register, and simulate browser
 	// The mock server auto-redirects authorize → callback
-	err := Login(profilePath)
+	err := Login(profilePath, LoginOptions{})
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -179,7 +182,7 @@ func TestLogin_ExplicitOAuth2Config(t *testing.T) {
 	}`, baseURL, baseURL, stateDir)
 	os.WriteFile(profilePath, []byte(profile), 0644)
 
-	err := Login(profilePath)
+	err := Login(profilePath, LoginOptions{})
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -234,7 +237,7 @@ func TestLogin_ExtraParams(t *testing.T) {
 	}`, baseURL, baseURL, stateDir)
 	os.WriteFile(profilePath, []byte(profile), 0644)
 
-	Login(profilePath)
+	Login(profilePath, LoginOptions{})
 
 	if receivedAudience != "api.example.com" {
 		t.Errorf("audience=%q, want api.example.com", receivedAudience)
@@ -255,7 +258,7 @@ func TestLogin_DefaultStateDir(t *testing.T) {
 	}`, srv.URL)
 	os.WriteFile(profilePath, []byte(profile), 0644)
 
-	err := Login(profilePath)
+	err := Login(profilePath, LoginOptions{})
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -296,7 +299,7 @@ func TestLogin_WrongFlow(t *testing.T) {
 		"auth": {"oauth2": {"flow": "client_credentials", "tokenUrl": "http://x", "clientId": "x", "clientSecret": "x"}}
 	}`), 0644)
 
-	err := Login(profilePath)
+	err := Login(profilePath, LoginOptions{})
 	if err == nil {
 		t.Fatal("expected error for client_credentials flow with --login")
 	}
@@ -307,8 +310,276 @@ func TestLogin_NoUpstreamURL(t *testing.T) {
 	profilePath := filepath.Join(dir, "profile.json")
 	os.WriteFile(profilePath, []byte(`{"name": "test"}`), 0644)
 
-	err := Login(profilePath)
+	err := Login(profilePath, LoginOptions{})
 	if err == nil {
 		t.Fatal("expected error when no auth and no upstream URL")
+	}
+}
+
+// TestLogin_FixedCallbackPort verifies that a non-zero CallbackPort
+// (either via profile or via LoginOptions) makes the OAuth callback
+// listener bind that exact loopback port, so the redirect_uri sent
+// to the authorize endpoint matches what's registered with the
+// provider. ADR 0001 §Decision §1.
+func TestLogin_FixedCallbackPort(t *testing.T) {
+	// Pick a free port by listening then closing — assumes the port
+	// stays free long enough for Login() to grab it. Racy in theory
+	// but reliable in practice on a single-developer machine.
+	pickFreePort := func(t *testing.T) int {
+		t.Helper()
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("pickFreePort: %v", err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		return port
+	}
+
+	var observedRedirectURI string
+	var baseURL string
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		observedRedirectURI = r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		http.Redirect(w, r, fmt.Sprintf("%s?code=c&state=%s", observedRedirectURI, state), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"Bearer","expires_in":3600}`)
+	})
+	srv := httptest.NewServer(mux)
+	baseURL = srv.URL
+	defer srv.Close()
+
+	port := pickFreePort(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	profilePath := filepath.Join(dir, "profile.json")
+	profile := fmt.Sprintf(`{
+		"name": "fixed-port",
+		"upstream": {"transport": "sse", "url": "http://unused"},
+		"auth": {
+			"oauth2": {
+				"flow": "authorization_code",
+				"authorizeUrl": "%s/authorize",
+				"tokenUrl": "%s/token",
+				"clientId": "c",
+				"callbackPort": %d
+			}
+		},
+		"stateDir": "%s"
+	}`, baseURL, baseURL, port, stateDir)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	if err := Login(profilePath, LoginOptions{}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	wantRedirect := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	if observedRedirectURI != wantRedirect {
+		t.Errorf("redirect_uri=%q, want %q (profile.callbackPort not honoured)", observedRedirectURI, wantRedirect)
+	}
+}
+
+// TestLogin_CallbackPortOptionsOverridesProfile verifies that the
+// LoginOptions.CallbackPort field (driven by the --callback-port CLI
+// flag in main.go) wins over the profile setting.
+func TestLogin_CallbackPortOptionsOverridesProfile(t *testing.T) {
+	pickFreePort := func(t *testing.T) int {
+		t.Helper()
+		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		p := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		return p
+	}
+
+	var observedRedirectURI string
+	var baseURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		observedRedirectURI = r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		http.Redirect(w, r, fmt.Sprintf("%s?code=c&state=%s", observedRedirectURI, state), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"Bearer","expires_in":3600}`)
+	})
+	srv := httptest.NewServer(mux)
+	baseURL = srv.URL
+	defer srv.Close()
+
+	profilePort := pickFreePort(t)
+	cliPort := pickFreePort(t)
+	for cliPort == profilePort { // ensure the two are different so the assertion is meaningful
+		cliPort = pickFreePort(t)
+	}
+
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	profilePath := filepath.Join(dir, "profile.json")
+	profile := fmt.Sprintf(`{
+		"name": "override",
+		"upstream": {"transport": "sse", "url": "http://unused"},
+		"auth": {
+			"oauth2": {
+				"flow": "authorization_code",
+				"authorizeUrl": "%s/authorize",
+				"tokenUrl": "%s/token",
+				"clientId": "c",
+				"callbackPort": %d
+			}
+		},
+		"stateDir": "%s"
+	}`, baseURL, baseURL, profilePort, stateDir)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	if err := Login(profilePath, LoginOptions{CallbackPort: cliPort}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	wantRedirect := fmt.Sprintf("http://127.0.0.1:%d/callback", cliPort)
+	if observedRedirectURI != wantRedirect {
+		t.Errorf("redirect_uri=%q, want %q (LoginOptions.CallbackPort should win over profile)", observedRedirectURI, wantRedirect)
+	}
+}
+
+// TestLogin_HTTPSCallback verifies that callbackScheme=https makes
+// --login bind an HTTPS callback listener with a valid self-signed
+// cert and constructs `https://localhost:<port>/callback` as the
+// redirect_uri. Slack and other providers that reject http:// redirects
+// rely on this path (ADR 0001 §Decision §4).
+func TestLogin_HTTPSCallback(t *testing.T) {
+	// Browser stub for this test: an HTTP client that accepts the
+	// ephemeral self-signed cert mcp-guardian generates.
+	origBrowser := openBrowserFunc
+	defer func() { openBrowserFunc = origBrowser }()
+	insecureClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	openBrowserFunc = func(url string) {
+		insecureClient.Get(url) //nolint:errcheck
+	}
+
+	pickFreePort := func(t *testing.T) int {
+		t.Helper()
+		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		p := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		return p
+	}
+
+	var observedRedirectURI string
+	var baseURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		observedRedirectURI = r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		http.Redirect(w, r, fmt.Sprintf("%s?code=c&state=%s", observedRedirectURI, state), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"Bearer","expires_in":3600}`)
+	})
+	srv := httptest.NewServer(mux)
+	baseURL = srv.URL
+	defer srv.Close()
+
+	port := pickFreePort(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	profilePath := filepath.Join(dir, "profile.json")
+	profile := fmt.Sprintf(`{
+		"name": "https-cb",
+		"upstream": {"transport": "sse", "url": "http://unused"},
+		"auth": {
+			"oauth2": {
+				"flow": "authorization_code",
+				"authorizeUrl": "%s/authorize",
+				"tokenUrl": "%s/token",
+				"clientId": "c",
+				"callbackPort": %d,
+				"callbackScheme": "https"
+			}
+		},
+		"stateDir": "%s"
+	}`, baseURL, baseURL, port, stateDir)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	if err := Login(profilePath, LoginOptions{}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	wantRedirect := fmt.Sprintf("https://localhost:%d/callback", port)
+	if observedRedirectURI != wantRedirect {
+		t.Errorf("redirect_uri=%q, want %q", observedRedirectURI, wantRedirect)
+	}
+	if !strings.HasPrefix(observedRedirectURI, "https://") {
+		t.Errorf("redirect_uri scheme is not https: %q", observedRedirectURI)
+	}
+}
+
+// TestLogin_ClientAuthMethodBasic verifies that
+// auth.oauth2.clientAuthMethod=basic routes the client_id /
+// client_secret pair into an HTTP Basic Authorization header on the
+// token-exchange request, leaving the form body free of credentials.
+func TestLogin_ClientAuthMethodBasic(t *testing.T) {
+	var basicUser, basicPass string
+	var basicOK bool
+	var formSecret string
+	var baseURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		redirectURI := r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		http.Redirect(w, r, fmt.Sprintf("%s?code=c&state=%s", redirectURI, state), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		basicUser, basicPass, basicOK = r.BasicAuth()
+		r.ParseForm()
+		formSecret = r.Form.Get("client_secret")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"Bearer","expires_in":3600}`)
+	})
+	srv := httptest.NewServer(mux)
+	baseURL = srv.URL
+	defer srv.Close()
+
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	profilePath := filepath.Join(dir, "profile.json")
+	profile := fmt.Sprintf(`{
+		"name": "basic-auth",
+		"upstream": {"transport": "sse", "url": "http://unused"},
+		"auth": {
+			"oauth2": {
+				"flow": "authorization_code",
+				"authorizeUrl": "%s/authorize",
+				"tokenUrl": "%s/token",
+				"clientId": "the-client",
+				"clientSecret": "the-secret",
+				"clientAuthMethod": "basic"
+			}
+		},
+		"stateDir": "%s"
+	}`, baseURL, baseURL, stateDir)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	if err := Login(profilePath, LoginOptions{}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	if !basicOK {
+		t.Fatal("token endpoint did not receive HTTP Basic auth")
+	}
+	if basicUser != "the-client" || basicPass != "the-secret" {
+		t.Errorf("Basic auth=%q:%q, want the-client:the-secret", basicUser, basicPass)
+	}
+	if formSecret != "" {
+		t.Errorf("form client_secret=%q must be empty when clientAuthMethod=basic", formSecret)
 	}
 }

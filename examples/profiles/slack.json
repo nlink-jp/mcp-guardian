@@ -1,0 +1,35 @@
+{
+  "name": "slack",
+  "upstream": {
+    "transport": "sse",
+    "url": "https://mcp.slack.com/mcp"
+  },
+  "auth": {
+    "oauth2": {
+      "flow": "authorization_code",
+      "authorizeUrl": "https://slack.com/oauth/v2_user/authorize",
+      "tokenUrl": "https://slack.com/api/oauth.v2.user.access",
+      "clientId": "<replace-with-your-slack-app-client-id>",
+      "clientSecret": "<replace-with-your-slack-app-client-secret>",
+      "callbackPort": 43117,
+      "callbackScheme": "https",
+      "clientAuthMethod": "post",
+      "scopes": [
+        "chat:write",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "search:read",
+        "users:read"
+      ]
+    }
+  },
+  "governance": {
+    "enforcement": "strict"
+  }
+}
