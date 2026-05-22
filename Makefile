@@ -4,6 +4,21 @@ GOFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 PREFIX  ?= /usr/local
 DESTDIR ?=
 
+# Developer ID Application identity matched against the keychain. Defaults
+# to the generic prefix so any single Developer ID Application cert in the
+# user's keychain is picked up automatically. Override when more than one
+# is present:
+#   make build CODESIGN_IDENTITY="Developer ID Application: ... (TEAMID)"
+# Builds without a matching identity (CI, other contributors) fall back to
+# the Go-linker ad-hoc signature with a warning — see scripts/codesign-darwin.sh.
+CODESIGN_IDENTITY ?= Developer ID Application
+
+# Notarization keychain profile name. Store credentials once per machine
+# via `xcrun notarytool store-credentials nlink-jp-notary --key <p8>
+# --key-id <id> --issuer <uuid>`. Builds without the profile skip
+# notarization with a warning — see scripts/notarize-darwin.sh.
+NOTARY_PROFILE ?= nlink-jp-notary
+
 .PHONY: build build-all package install uninstall test lint check clean help \
        docs-mirror-check otel-up otel-down integration-test
 
@@ -11,6 +26,7 @@ DESTDIR ?=
 build:
 	@mkdir -p dist
 	go build $(GOFLAGS) -o dist/$(BINARY) .
+	@scripts/codesign-darwin.sh dist/$(BINARY) "$(CODESIGN_IDENTITY)"
 
 ## build-all: Cross-compile for all platforms
 build-all:
@@ -20,15 +36,20 @@ build-all:
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build $(GOFLAGS) -o dist/$(BINARY)-darwin-amd64  .
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build $(GOFLAGS) -o dist/$(BINARY)-darwin-arm64  .
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -o dist/$(BINARY)-windows-amd64.exe .
+	@scripts/codesign-darwin.sh dist/$(BINARY)-darwin-amd64 "$(CODESIGN_IDENTITY)"
+	@scripts/codesign-darwin.sh dist/$(BINARY)-darwin-arm64 "$(CODESIGN_IDENTITY)"
 
-## package: Build and create zip archives
+## package: Build, create zip archives, and notarize darwin builds
 package: build-all
 	@cd dist && for f in $(BINARY)-*; do \
+		case "$$f" in *.zip) continue ;; esac; \
 		name=$${f%%.exe}; \
 		cp ../README.md .; \
-		zip -j "$${name}.zip" "$$f" README.md; \
+		zip -j "$${name}-$(VERSION).zip" "$$f" README.md; \
 		rm -f README.md; \
 	done
+	@scripts/notarize-darwin.sh dist/$(BINARY)-darwin-amd64-$(VERSION).zip "$(NOTARY_PROFILE)"
+	@scripts/notarize-darwin.sh dist/$(BINARY)-darwin-arm64-$(VERSION).zip "$(NOTARY_PROFILE)"
 
 ## install: Install to $(DESTDIR)$(PREFIX)/bin
 install: build
