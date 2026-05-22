@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.8.1] - 2026-05-22
+
+### Changed
+
+- **Releases are now Developer ID signed and Apple-notarized.**
+  Darwin release zips (`mcp-guardian-darwin-{amd64,arm64}-vX.Y.Z.zip`)
+  carry full Apple Developer ID Application signatures and
+  notarization tickets from Apple. End users on macOS no longer need
+  to bypass Gatekeeper with "right-click → Open" or
+  `xattr -d com.apple.quarantine` on first launch — the binary is
+  trusted by the OS out of the box. Local users who place
+  `mcp-guardian` under Dropbox-synced (or any other FileProvider-
+  managed) paths are no longer killed by macOS's ad-hoc + provenance
+  distrust policy. Pipeline: `scripts/codesign-darwin.sh` +
+  `scripts/notarize-darwin.sh`, driven by `make package`.
+- **Release zip filenames now embed the version**
+  (`mcp-guardian-<os>-<arch>-vX.Y.Z.zip`), matching the GH release
+  asset convention this project has used since v0.8.0. No behaviour
+  change to the binary itself.
+
 ## [0.8.0] - 2026-05-21
 
 ### Added
