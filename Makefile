@@ -44,8 +44,12 @@ package: build-all
 	@cd dist && for f in $(BINARY)-*; do \
 		case "$$f" in *.zip) continue ;; esac; \
 		name=$${f%%.exe}; \
+		ext=""; case "$$f" in *.exe) ext=".exe" ;; esac; \
 		cp ../README.md .; \
-		zip -j "$${name}-$(VERSION).zip" "$$f" README.md; \
+		stage="$$(dirname "$$f")/_pkg"; rm -rf "$$stage"; mkdir -p "$$stage"; \
+		cp "$$f" "$$stage/$(BINARY)$$ext"; \
+		zip -j "$${name}-$(VERSION).zip" "$$stage/$(BINARY)$$ext" README.md; \
+		rm -rf "$$stage"; \
 		rm -f README.md; \
 	done
 	@scripts/notarize-darwin.sh dist/$(BINARY)-darwin-amd64-$(VERSION).zip "$(NOTARY_PROFILE)"
