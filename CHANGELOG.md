@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.8.2] - 2026-05-26
+
+### Fixed
+
+- **A client request that can't be forwarded upstream now returns a
+  JSON-RPC error instead of hanging.** Previously, when forwarding a
+  request failed (e.g. the SSE transport couldn't obtain an auth token
+  because the stored OAuth token had expired with no refresh token),
+  the proxy logged the error and sent nothing back — the MCP client
+  blocked until its own timeout. The proxy now replies with a JSON-RPC
+  error (code -32603) carrying the reason
+  (`...access token expired ... run --login again`), so the client
+  surfaces it immediately. (ADR-0002.)
+- **Release zips store the binary under its canonical name** (e.g.
+  `mcp-guardian`, not `mcp-guardian-darwin-arm64`), so it no longer
+  needs renaming/symlinking on deploy. The zip filename keeps its
+  arch suffix.
+
 ## [0.8.1] - 2026-05-22
 
 ### Changed
