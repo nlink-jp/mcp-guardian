@@ -163,6 +163,16 @@ func (p *Proxy) readAgent() error {
 
 		if err := p.routeAgentMessage(msg, line); err != nil {
 			logStderr("mcp-guardian: route error: %v\n", err)
+			// Invariant: a client request whose routing fails always
+			// gets a JSON-RPC error response, so the client surfaces
+			// the reason (e.g. an expired auth token: "run --login
+			// again") instead of blocking until its own timeout.
+			// Notifications have no id — nothing to respond to.
+			// (ADR-0002. No double-response: handlers never write a
+			// response and then return an error.)
+			if msg.IsRequest() {
+				_ = writeMessage(jsonrpc.NewErrorResponse(msg.ID, -32603, err.Error()))
+			}
 		}
 	}
 

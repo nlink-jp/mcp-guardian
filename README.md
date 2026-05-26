@@ -26,6 +26,7 @@ MCP tool servers give AI agents powerful capabilities. Without oversight, agents
 - **Browser login**: `--login` auto-discovers OAuth2, registers a client, opens browser, stores tokens
 - **External token command**: integrate with `gcloud`, `vault`, or any CLI tool
 - **401 auto-retry**: transparent token refresh on authentication failure
+- **Fail-fast on unforwardable requests**: if a client request can't be sent upstream (e.g. the stored OAuth token has expired and there is no refresh token), the proxy returns a JSON-RPC error to the client carrying the reason (`...access token expired ... run --login again`) instead of leaving the client to hang until its own timeout
 - Hash-chained receipt ledger (JSONL, verifiable)
 - **Receipt auto-purge**: configurable retention period, OTLP/Splunk for long-term storage
 - 5-gate governance pipeline
