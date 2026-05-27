@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.8.3] - 2026-05-27
+
+### Fixed
+
+- **Tokens issued without a refresh token are now treated as
+  non-expiring instead of being declared dead after one hour.**
+  Providers such as Slack (without token rotation enabled) return an
+  access token with no `expires_in` and no `refresh_token`; the token
+  never expires. Previously `--login` recorded a synthetic 1-hour
+  `expires_at`, after which the proxy reported `access token expired …
+  run --login again` even though the token was still valid — forcing a
+  needless re-login every hour. `--login` now stores `expires_at: 0`
+  ("no known expiry") for such tokens, and the token provider returns
+  them as-is, relying on a real upstream 401 (surfaced as a JSON-RPC
+  error, see 0.8.2) to detect genuine revocation. Existing
+  `tokens.json` files written with the old synthetic expiry start
+  working again with no re-login. Token rotation (refresh-token) flows
+  are unchanged. (ADR-0003.)
+
 ## [0.8.2] - 2026-05-26
 
 ### Fixed
