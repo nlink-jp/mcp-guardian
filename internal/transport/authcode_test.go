@@ -154,6 +154,77 @@ func TestStoredTokenProvider_InvalidateForcesRefresh(t *testing.T) {
 	}
 }
 
+// TestStoredTokenProvider_NoRefreshTokenReturnsAsIs verifies ADR-0003:
+// a token with no refresh_token is returned as-is, even past its stored
+// expiry, WITHOUT contacting the token endpoint. This is the Slack
+// (no token rotation) case — the access token never expires, so a local
+// expiry check would be a false negative.
+func TestStoredTokenProvider_NoRefreshTokenReturnsAsIs(t *testing.T) {
+	dir := t.TempDir()
+
+	// A token endpoint that fails the test if it is ever hit.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("token endpoint contacted, but a refresh-less token must be returned as-is")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer tokenSrv.Close()
+
+	// No refresh token, stored expiry already in the past.
+	SaveTokens(dir, &StoredTokens{
+		AccessToken:  "xoxp-non-expiring",
+		RefreshToken: "",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour).Unix(),
+	})
+
+	provider, err := NewStoredTokenProvider(StoredTokenConfig{
+		StateDir: dir,
+		TokenURL: tokenSrv.URL,
+		ClientID: "test",
+	})
+	if err != nil {
+		t.Fatalf("NewStoredTokenProvider: %v", err)
+	}
+
+	tok, err := provider.Token()
+	if err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if tok != "xoxp-non-expiring" {
+		t.Errorf("token=%q, want xoxp-non-expiring", tok)
+	}
+}
+
+// TestStoredTokenProvider_NoRefreshNoAccessErrors verifies that once a
+// refresh-less token has been invalidated (e.g. by a real 401), Token()
+// reports that there is nothing usable rather than looping.
+func TestStoredTokenProvider_NoRefreshNoAccessErrors(t *testing.T) {
+	dir := t.TempDir()
+
+	SaveTokens(dir, &StoredTokens{
+		AccessToken:  "present",
+		RefreshToken: "",
+		TokenType:    "Bearer",
+		ExpiresAt:    0,
+	})
+
+	provider, err := NewStoredTokenProvider(StoredTokenConfig{
+		StateDir: dir,
+		TokenURL: "http://unused",
+		ClientID: "test",
+	})
+	if err != nil {
+		t.Fatalf("NewStoredTokenProvider: %v", err)
+	}
+
+	// Simulate a 401: the proxy invalidates the token, clearing it.
+	provider.Invalidate()
+
+	if _, err := provider.Token(); err == nil {
+		t.Fatal("expected error when no access token and no refresh token")
+	}
+}
+
 func TestStoredTokenProvider_NoTokensFile(t *testing.T) {
 	dir := t.TempDir()
 	_, err := NewStoredTokenProvider(StoredTokenConfig{

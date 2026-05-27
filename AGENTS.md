@@ -63,6 +63,7 @@ internal/
 - **Upstream command** with spaces and no args is run via `sh -c` (shell interpretation)
 - **1MB scanner buffer** — tool responses larger than 1MB will be truncated
 - **syscall.TCGETS** is used for TTY detection (Linux-specific; needs adjustment for other platforms)
+- **Refresh-less OAuth tokens are non-expiring** (ADR-0003) — when a token response has no `expires_in` and no `refresh_token` (e.g. Slack without token rotation), `--login` stores `expires_at=0` and `Token()` returns it as-is. Do NOT reintroduce a synthetic expiry fallback; a real revocation is surfaced by the upstream 401 path (ADR-0002).
 
 ## Environment Variables
 

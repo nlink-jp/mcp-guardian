@@ -100,14 +100,23 @@ func (p *storedTokenProvider) Token() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Return cached token if still valid (with 30s margin)
-	if p.tokens.AccessToken != "" && time.Now().Add(30*time.Second).Before(time.Unix(p.tokens.ExpiresAt, 0)) {
+	// Without a refresh token there is no way to renew, so the stored expiry
+	// is unactionable: some providers (notably Slack without token rotation)
+	// issue non-expiring tokens with neither refresh_token nor expires_in,
+	// and --login records expires_at=0 for them. Return the access token
+	// as-is; a genuine revocation surfaces as an upstream 401, which the
+	// proxy turns into a JSON-RPC error (ADR-0002, ADR-0003) instead of
+	// failing here on a synthetic expiry.
+	if p.tokens.RefreshToken == "" {
+		if p.tokens.AccessToken == "" {
+			return "", fmt.Errorf("no access token available (run --login)")
+		}
 		return p.tokens.AccessToken, nil
 	}
 
-	// Refresh using refresh token
-	if p.tokens.RefreshToken == "" {
-		return "", fmt.Errorf("access token expired and no refresh token available (run --login again)")
+	// Return cached token if still valid (with 30s margin)
+	if p.tokens.AccessToken != "" && time.Now().Add(30*time.Second).Before(time.Unix(p.tokens.ExpiresAt, 0)) {
+		return p.tokens.AccessToken, nil
 	}
 
 	newTokens, err := refreshTokens(p.cfg, p.tokens.RefreshToken)

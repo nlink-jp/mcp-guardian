@@ -379,6 +379,14 @@ OAuth2 authorization_code login works two ways:
   [docs/en/reference/oauth2-manual-setup.md](docs/en/reference/oauth2-manual-setup.md).
   Slack example profile at [examples/profiles/slack.json](examples/profiles/slack.json).
 
+> **Non-expiring tokens (e.g. Slack without token rotation).** Some
+> providers issue an access token that never expires and return no
+> `refresh_token` and no `expires_in`. In that case `tokens.json` records
+> `"refresh_token": ""` and `"expires_at": 0` — this is expected, not an
+> error. mcp-guardian uses the token indefinitely and only reports an auth
+> failure when the upstream actually rejects it (HTTP 401), at which point
+> it tells you to run `--login` again. (ADR-0003.)
+
 ### State directory
 
 Default: `~/.config/mcp-guardian/state/<profile-name>/`. Override per profile with `stateDir` or via `--state-dir`.

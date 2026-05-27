@@ -283,8 +283,19 @@ func Login(profileNameOrPath string, opts LoginOptions) error {
 		return fmt.Errorf("empty access_token in token response")
 	}
 
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
-	if tokenResp.ExpiresIn <= 0 {
+	// Decide the stored expiry:
+	//   - expires_in present                → honour it.
+	//   - no expires_in but a refresh_token → probe again in 1 hour; the
+	//     provider can renew silently before then.
+	//   - no expires_in and no refresh_token → non-expiring, non-refreshable
+	//     token (e.g. Slack without token rotation). Store 0 ("no known
+	//     expiry"); the provider returns it as-is and relies on the upstream
+	//     401 path to surface a real revocation. (ADR-0003.)
+	var expiresAt int64
+	switch {
+	case tokenResp.ExpiresIn > 0:
+		expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
+	case tokenResp.RefreshToken != "":
 		expiresAt = time.Now().Add(1 * time.Hour).Unix()
 	}
 

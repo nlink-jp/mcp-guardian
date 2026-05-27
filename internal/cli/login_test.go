@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nlink-jp/mcp-guardian/internal/transport"
 )
@@ -313,6 +314,94 @@ func TestLogin_NoUpstreamURL(t *testing.T) {
 	err := Login(profilePath, LoginOptions{})
 	if err == nil {
 		t.Fatal("expected error when no auth and no upstream URL")
+	}
+}
+
+// loginWithTokenResponse runs a full manual-profile login against a mock
+// server whose /token endpoint returns the given JSON body, and returns
+// the StoredTokens that were persisted. Used to assert how --login maps
+// a token response onto expires_at (ADR-0003).
+func loginWithTokenResponse(t *testing.T, tokenJSON string) transport.StoredTokens {
+	t.Helper()
+	var baseURL string
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		redirectURI := r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		http.Redirect(w, r, fmt.Sprintf("%s?code=c&state=%s", redirectURI, state), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, tokenJSON)
+	})
+
+	srv := httptest.NewServer(mux)
+	baseURL = srv.URL
+	defer srv.Close()
+
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	profilePath := filepath.Join(dir, "profile.json")
+
+	profile := fmt.Sprintf(`{
+		"name": "expiry",
+		"upstream": {"transport": "sse", "url": "http://unused"},
+		"auth": {"oauth2": {
+			"flow": "authorization_code",
+			"authorizeUrl": "%s/authorize",
+			"tokenUrl": "%s/token",
+			"clientId": "c"
+		}},
+		"stateDir": "%s"
+	}`, baseURL, baseURL, stateDir)
+	os.WriteFile(profilePath, []byte(profile), 0644)
+
+	if err := Login(profilePath, LoginOptions{}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(stateDir, "tokens.json"))
+	if err != nil {
+		t.Fatalf("tokens.json not found: %v", err)
+	}
+	var tokens transport.StoredTokens
+	if err := json.Unmarshal(data, &tokens); err != nil {
+		t.Fatalf("unmarshal tokens.json: %v", err)
+	}
+	return tokens
+}
+
+// TestLogin_NonExpiringTokenStoresZeroExpiry verifies ADR-0003: when the
+// token response carries neither expires_in nor refresh_token (Slack
+// without token rotation), --login stores expires_at=0 ("no known
+// expiry") rather than a synthetic 1-hour expiry.
+func TestLogin_NonExpiringTokenStoresZeroExpiry(t *testing.T) {
+	tokens := loginWithTokenResponse(t, `{"access_token":"xoxp-tok","token_type":"Bearer"}`)
+
+	if tokens.AccessToken != "xoxp-tok" {
+		t.Errorf("access_token=%q, want xoxp-tok", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "" {
+		t.Errorf("refresh_token=%q, want empty", tokens.RefreshToken)
+	}
+	if tokens.ExpiresAt != 0 {
+		t.Errorf("expires_at=%d, want 0 (non-expiring)", tokens.ExpiresAt)
+	}
+}
+
+// TestLogin_RefreshTokenNoExpiryProbesInOneHour verifies that when a
+// refresh_token is present but expires_in is absent, --login stores a
+// ~1-hour probe so the provider re-checks (and can refresh) before then.
+func TestLogin_RefreshTokenNoExpiryProbesInOneHour(t *testing.T) {
+	before := time.Now()
+	tokens := loginWithTokenResponse(t, `{"access_token":"a","refresh_token":"r","token_type":"Bearer"}`)
+	after := time.Now()
+
+	lo := before.Add(1 * time.Hour).Unix()
+	hi := after.Add(1*time.Hour + time.Second).Unix()
+	if tokens.ExpiresAt < lo || tokens.ExpiresAt > hi {
+		t.Errorf("expires_at=%d, want ~1h ahead (in [%d,%d])", tokens.ExpiresAt, lo, hi)
 	}
 }
 

@@ -334,6 +334,14 @@ OAuth2 authorization_code ログインは 2 通り:
   Slack 用の profile サンプルは
   [examples/profiles/slack.json](examples/profiles/slack.json)。
 
+> **無期限トークン (例: トークンローテーション無効の Slack)。** 一部の
+> プロバイダは失効しないアクセストークンを発行し、`refresh_token` も
+> `expires_in` も返さない。この場合 `tokens.json` は
+> `"refresh_token": ""`・`"expires_at": 0` を記録するが、これはエラー
+> ではなく想定どおりの状態である。mcp-guardian はそのトークンを無期限に
+> 使い、上流が実際に拒否したとき (HTTP 401) にのみ認証失敗を報告し、
+> `--login` のやり直しを促す。(ADR-0003。)
+
 ### 状態ディレクトリ
 
 デフォルト: `~/.config/mcp-guardian/state/<プロファイル名>/`。プロファイルの `stateDir` または `--state-dir` で上書き可能。
