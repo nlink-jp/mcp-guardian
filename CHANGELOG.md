@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.9.0] - 2026-07-12
+
+### Removed
+
+- **darwin/amd64 (Intel) pre-built binary.** macOS releases now ship
+  **arm64 only**, per the org-wide policy (darwin is Apple-Silicon only; no
+  universal binaries). Intel Mac users can build from source.
+
+### Changed
+
+- **Release archive names now put the version before the os/arch**
+  (`mcp-guardian-vX.Y.Z-<os>-<arch>.<ext>` instead of the old
+  `mcp-guardian-<os>-<arch>-vX.Y.Z.zip`), matching the org-wide Release
+  Archive Standard (`nlink-jp/.github` CONVENTIONS.md).
+- **Linux release archives are now `.tar.gz`** (darwin/windows remain `.zip`).
+- **`LICENSE` is now bundled** in every release archive alongside `README.md`.
+- **darwin code-signature identifier** is now the canonical `mcp-guardian`
+  (was `mcp-guardian-darwin-arm64`), set via `codesign -i` so it stays
+  stable after the archived binary is renamed to its canonical name.
+- **Dropped the `-s -w` linker strip flags**, aligning `GOFLAGS` with the
+  org-standard form; also avoids a false-positive antivirus quarantine of
+  the stripped Windows binary during cross-build.
+
+No change to the binary's behaviour — a packaging / build-config release.
+
 ## [0.8.3] - 2026-05-27
 
 ### Fixed
